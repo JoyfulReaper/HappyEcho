@@ -56,7 +56,7 @@ public class EchoWorker(
 
                 if (!_connectionLimit.Wait(0))
                 {
-                    logger.LogWarning("[REJECTED] Server busy (All {Max} slots taken). Dropping immediate connection.", options.Value.MaxConcurrentConnections);
+                    logger.LogInformation("[REJECTED] Server busy (All {Max} slots taken). Dropping immediate connection.", options.Value.MaxConcurrentConnections);
                     client.Dispose();
                     continue;
                 }
@@ -118,20 +118,20 @@ public class EchoWorker(
             try
             {
                 await using NetworkStream stream = client.GetStream();
-                await EchoAsync(stream, options.Value.RequestTimeoutSeconds, stoppingToken);
+                await EchoAsync(stream, options.Value.RequestTimeoutSeconds,options.Value.MaxBytesPerConnection, stoppingToken);
 
                 logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
             }
             catch (OperationCanceledException)
             {
-                logger.LogWarning(
+                logger.LogDebug(
                     "Connection {ConnectionId} from {Remote} timed out.",
                     connectionId,
                     remote);
             }
             catch (InvalidDataException exception)
             {
-                logger.LogWarning(
+                logger.LogInformation(
                     exception,
                     "Rejected malformed request on connection {ConnectionId} from {Remote}.",
                     connectionId,
@@ -164,13 +164,15 @@ public class EchoWorker(
         }
     }
 
-    public static async Task EchoAsync(
+    public static async Task<long> EchoAsync(
         Stream stream,
         int RequestTimeoutSeconds,
+        long maxBytesPerConnection,
         CancellationToken stoppingToken)
     {
         const int BUFFER_SIZE = 4096;
         byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_SIZE);
+        long totalBytesEchoed = 0;
 
         // We dont want to keep echoing data forever so we set a timeout
         using var timeout =
@@ -179,21 +181,31 @@ public class EchoWorker(
 
         try
         {
-            while (true)
+            while (totalBytesEchoed < maxBytesPerConnection)
             {
+                long remaining =
+                    maxBytesPerConnection - totalBytesEchoed;
+
+                int readSize = (int)Math.Min(
+                                BUFFER_SIZE,
+                                remaining);
+
                 int bytesRead = await stream.ReadAsync(
-                    buffer.AsMemory(0, BUFFER_SIZE),
+                    buffer.AsMemory(0, readSize),
                     timeout.Token);
 
                 if (bytesRead == 0)
                 {
                     // Client disconnected
-                    return;
+                    break;
                 }
 
-                await stream.WriteAsync(buffer.AsMemory(0, bytesRead), stoppingToken);
-                await stream.FlushAsync(stoppingToken);
+                await stream.WriteAsync(buffer.AsMemory(0, bytesRead), timeout.Token);
+                await stream.FlushAsync(timeout.Token);
+
+                totalBytesEchoed += bytesRead;
             }
+            return totalBytesEchoed;
         }
         finally
         {

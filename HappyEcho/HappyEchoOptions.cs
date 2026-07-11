@@ -13,4 +13,5 @@ public sealed class HappyEchoOptions
     public int Port { get; init; } = 7;
     public int MaxConcurrentConnections { get; init; } = 64;
     public int RequestTimeoutSeconds { get; init; } = 15;
+    public long MaxBytesPerConnection { get; init; } = 1_048_576;
 }
