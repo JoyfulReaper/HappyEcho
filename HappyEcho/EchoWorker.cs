@@ -58,7 +58,7 @@ public class EchoWorker(
                 {
                     logger.LogWarning("[REJECTED] Server busy (All {Max} slots taken). Dropping immediate connection.", options.Value.MaxConcurrentConnections);
                     client.Dispose();
-                    continue; 
+                    continue;
                 }
 
                 long connectionId = Interlocked.Increment(ref _nextConnectionId);
@@ -172,7 +172,7 @@ public class EchoWorker(
         const int BUFFER_SIZE = 4096;
         byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_SIZE);
 
-        // We dont want to keep eching data forever so we set a timeout
+        // We dont want to keep echoing data forever so we set a timeout
         using var timeout =
             CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(RequestTimeoutSeconds));
