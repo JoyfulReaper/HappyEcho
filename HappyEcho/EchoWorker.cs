@@ -10,7 +10,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 
 namespace HappyEcho;
 
@@ -117,10 +116,10 @@ public class EchoWorker(
 
             try
             {
-                await using NetworkStream stream = client.GetStream();
-                await EchoAsync(stream, options.Value.RequestTimeoutSeconds,options.Value.MaxBytesPerConnection, stoppingToken);
-
                 logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
+                await using NetworkStream stream = client.GetStream();
+                await EchoAsync(stream, options.Value.RequestTimeoutSeconds, options.Value.MaxBytesPerConnection, stoppingToken);
+
             }
             catch (OperationCanceledException)
             {
