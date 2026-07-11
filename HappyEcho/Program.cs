@@ -10,7 +10,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddWindowsService(options =>
 {
-    options.ServiceName = "Happy Finger Server";
+    options.ServiceName = "Happy Echo Server";
 });
 
 builder.Services
