@@ -14,4 +14,5 @@ public sealed class HappyEchoOptions
     public int MaxConcurrentConnections { get; init; } = 64;
     public int RequestTimeoutSeconds { get; init; } = 15;
     public long MaxBytesPerConnection { get; init; } = 1_048_576;
+    public string? TelemetryIgnoredRemoteAddress { get; init; }
 }

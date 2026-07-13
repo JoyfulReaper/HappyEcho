@@ -19,6 +19,9 @@ It implements the classic Echo Protocol: every byte received from a client is se
 * Windows Service support
 * Structured logging
 
+# Try it live
+Connect to TCP port 7 echo.kgivler.com and send bytes.
+
 ## Requirements
 
 To build HappyEcho:
@@ -58,7 +61,8 @@ HappyEcho reads settings from the `Echo` configuration section.
     "Port": 7,
     "MaxConcurrentConnections": 64,
     "RequestTimeoutSeconds": 15,
-    "MaxBytesPerConnection": 1048576
+    "MaxBytesPerConnection": 1048576,
+    "TelemetryIgnoredRemoteAddress": null
   },
   "MissionControl": {
     "Enabled": false,
@@ -76,6 +80,7 @@ HappyEcho reads settings from the `Echo` configuration section.
 | `MaxConcurrentConnections` |        `64` | Maximum number of simultaneous client connections.                                 |
 | `RequestTimeoutSeconds`    |        `15` | Maximum lifetime of one connection.                                                |
 | `MaxBytesPerConnection`    |   `1048576` | Maximum bytes echoed during one connection. The default is 1 MiB.                  |
+| `TelemetryIgnoredRemoteAddress` |     `null` | Optional monitor IP whose Echo sessions are processed normally but excluded from Mission Control lifecycle telemetry. |
 
 Settings can also be supplied through environment variables:
 
@@ -85,6 +90,7 @@ Echo__Port=7
 Echo__MaxConcurrentConnections=64
 Echo__RequestTimeoutSeconds=15
 Echo__MaxBytesPerConnection=1048576
+Echo__TelemetryIgnoredRemoteAddress=172.21.0.1
 
 MissionControl__Enabled=true
 MissionControl__BaseUrl=http://gateway:8080
@@ -93,6 +99,8 @@ MissionControl__TimeoutMilliseconds=1000
 ```
 
 HappyEcho rejects loopback clients. For a public VPS deployment, bind to `0.0.0.0` or a specific external address and test it from another machine.
+
+`TelemetryIgnoredRemoteAddress` suppresses Mission Control telemetry only. The TCP session is still accepted, echoed, timed out, byte-limited, and cleaned up normally. The comparison uses only the normalized remote IP address, not the source port, and IPv4-mapped IPv6 addresses are mapped to IPv4 before comparison. This is intended for Uptime Kuma or another trusted TCP monitor. Docker network gateway addresses vary by host and network, so verify the actual monitor source address before setting it.
 
 ## Mission Control Events
 
@@ -234,6 +242,7 @@ happyecho:
     Echo__MaxConcurrentConnections: 64
     Echo__RequestTimeoutSeconds: 15
     Echo__MaxBytesPerConnection: 1048576
+    Echo__TelemetryIgnoredRemoteAddress: "172.21.0.1"
 
     MissionControl__Enabled: "true"
     MissionControl__BaseUrl: http://gateway:8080
