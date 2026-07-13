@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="JoyfulReaperLib" Version="0.0.11" />
+    <PackageReference Include="JoyfulReaperLib.MissionControl" Version="0.0.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.9" />
   </ItemGroup>

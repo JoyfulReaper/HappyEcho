@@ -5,9 +5,11 @@
  */
 
 using JoyfulReaperLib.JRNet;
+using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Options;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -15,6 +17,7 @@ namespace HappyEcho;
 
 public class EchoWorker(
     ILogger<EchoWorker> logger,
+    IMissionControlClient missionControlClient,
     IOptions<HappyEchoOptions> options) : BackgroundService
 {
     private TcpListener? _listener;
@@ -117,9 +120,8 @@ public class EchoWorker(
             try
             {
                 logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
-                await using NetworkStream stream = client.GetStream();
-                await EchoAsync(stream, options.Value.RequestTimeoutSeconds, options.Value.MaxBytesPerConnection, stoppingToken);
-
+                NetworkStream stream = client.GetStream();
+                await ProcessEchoSessionAsync(stream, remote, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -163,15 +165,207 @@ public class EchoWorker(
         }
     }
 
+    internal async Task ProcessEchoSessionAsync(
+        Stream stream,
+        EndPoint? remote,
+        CancellationToken stoppingToken)
+    {
+        string remoteString = remote?.ToString() ?? "unknown";
+        string correlationId = Guid.NewGuid().ToString("N");
+        DateTimeOffset startedOccurredAt = DateTimeOffset.UtcNow;
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        var state = new EchoSessionState();
+
+        Task startedTelemetryTask = PublishStreamingStartedAsync(
+            remoteString,
+            startedOccurredAt,
+            correlationId,
+            CancellationToken.None);
+
+        string outcome = "failed";
+        bool succeeded = false;
+
+        try
+        {
+            await EchoAsync(
+                stream,
+                options.Value.RequestTimeoutSeconds,
+                options.Value.MaxBytesPerConnection,
+                stoppingToken,
+                state);
+
+            outcome = state.ByteLimitReached
+                ? "byte-limit-reached"
+                : "client-disconnected";
+            succeeded = true;
+        }
+        catch (OperationCanceledException)
+        when (stoppingToken.IsCancellationRequested)
+        {
+            outcome = "server-shutdown";
+
+            logger.LogDebug(
+                "Echo session from {Remote} was cancelled during shutdown.",
+                remote);
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = "timeout";
+
+            logger.LogDebug(
+                "Echo session from {Remote} timed out.",
+                remote);
+        }
+        catch (IOException exception)
+        {
+            outcome = "io-error";
+
+            logger.LogDebug(
+                exception,
+                "Echo session from {Remote} ended early.",
+                remote);
+        }
+        catch (SocketException exception)
+        {
+            outcome = "socket-error";
+
+            logger.LogDebug(
+                exception,
+                "Socket error during echo session from {Remote}.",
+                remote);
+        }
+        catch (Exception exception)
+        {
+            outcome = "failed";
+
+            logger.LogError(
+                exception,
+                "Unhandled error during echo session from {Remote}.",
+                remote);
+        }
+        finally
+        {
+            stopwatch.Stop();
+
+            try
+            {
+                await stream.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                logger.LogDebug(
+                    exception,
+                    "Failed to dispose echo stream for {Remote}.",
+                    remote);
+            }
+        }
+
+        DateTimeOffset stoppedOccurredAt = DateTimeOffset.UtcNow;
+
+        await ObserveStartedTelemetryAsync(startedTelemetryTask);
+
+        await PublishStreamingStoppedAsync(
+            remoteString,
+            state.BytesEchoed,
+            stopwatch.ElapsedMilliseconds,
+            outcome,
+            succeeded,
+            stoppedOccurredAt,
+            correlationId,
+            CancellationToken.None);
+    }
+
+    private async Task PublishStreamingStartedAsync(
+        string remote,
+        DateTimeOffset occurredAt,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        await missionControlClient.TryPublishAsync(
+            eventType: HappyEchoEventTypes.StreamingStarted,
+            payload: new StreamingStartedEvent(
+                remote,
+                options.Value.RequestTimeoutSeconds,
+                options.Value.MaxBytesPerConnection),
+            occurredAt,
+            correlationId,
+            cancellationToken);
+    }
+
+    private async Task ObserveStartedTelemetryAsync(
+        Task startedTelemetryTask)
+    {
+        try
+        {
+            await startedTelemetryTask;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to publish Mission Control streaming started event.");
+        }
+    }
+
+    private async Task PublishStreamingStoppedAsync(
+        string remote,
+        long bytesEchoed,
+        long durationMilliseconds,
+        string outcome,
+        bool succeeded,
+        DateTimeOffset occurredAt,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await missionControlClient.TryPublishAsync(
+                eventType: HappyEchoEventTypes.StreamingStopped,
+                payload: new StreamingStoppedEvent(
+                    remote,
+                    bytesEchoed,
+                    durationMilliseconds,
+                    outcome,
+                    succeeded),
+                occurredAt,
+                correlationId,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to publish Mission Control streaming stopped event.");
+        }
+    }
+
     public static async Task<long> EchoAsync(
         Stream stream,
         int RequestTimeoutSeconds,
         long maxBytesPerConnection,
         CancellationToken stoppingToken)
     {
+        var state = new EchoSessionState();
+
+        await EchoAsync(
+            stream,
+            RequestTimeoutSeconds,
+            maxBytesPerConnection,
+            stoppingToken,
+            state);
+
+        return state.BytesEchoed;
+    }
+
+    internal static async Task EchoAsync(
+        Stream stream,
+        int RequestTimeoutSeconds,
+        long maxBytesPerConnection,
+        CancellationToken stoppingToken,
+        EchoSessionState state)
+    {
         const int BUFFER_SIZE = 4096;
         byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_SIZE);
-        long totalBytesEchoed = 0;
 
         // We dont want to keep echoing data forever so we set a timeout
         using var timeout =
@@ -180,10 +374,10 @@ public class EchoWorker(
 
         try
         {
-            while (totalBytesEchoed < maxBytesPerConnection)
+            while (state.BytesEchoed < maxBytesPerConnection)
             {
                 long remaining =
-                    maxBytesPerConnection - totalBytesEchoed;
+                    maxBytesPerConnection - state.BytesEchoed;
 
                 int readSize = (int)Math.Min(
                                 BUFFER_SIZE,
@@ -202,13 +396,23 @@ public class EchoWorker(
                 await stream.WriteAsync(buffer.AsMemory(0, bytesRead), timeout.Token);
                 await stream.FlushAsync(timeout.Token);
 
-                totalBytesEchoed += bytesRead;
+                state.BytesEchoed += bytesRead;
             }
-            return totalBytesEchoed;
+
+            state.ByteLimitReached = state.BytesEchoed >= maxBytesPerConnection;
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+        logger.LogInformation("HappyEcho Server Stopping...");
+        _stopRequested = true;
+        _listener?.Stop();
+
+        return base.StopAsync(cancellationToken);
     }
 }
