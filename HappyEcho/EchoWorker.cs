@@ -171,16 +171,26 @@ public class EchoWorker(
         CancellationToken stoppingToken)
     {
         string remoteString = remote?.ToString() ?? "unknown";
-        string correlationId = Guid.NewGuid().ToString("N");
-        DateTimeOffset startedOccurredAt = DateTimeOffset.UtcNow;
+        bool isIgnoredTelemetrySource = IsIgnoredTelemetrySource(remote);
         Stopwatch stopwatch = Stopwatch.StartNew();
         var state = new EchoSessionState();
 
-        Task startedTelemetryTask = PublishStreamingStartedAsync(
-            remoteString,
-            startedOccurredAt,
-            correlationId,
-            CancellationToken.None);
+        if (isIgnoredTelemetrySource)
+        {
+            logger.LogDebug(
+                "Skipping telemetry for monitoring connection from {Remote}.",
+                remote);
+        }
+
+        string correlationId = Guid.NewGuid().ToString("N");
+        DateTimeOffset startedOccurredAt = DateTimeOffset.UtcNow;
+        Task? startedTelemetryTask = isIgnoredTelemetrySource
+            ? null
+            : PublishStreamingStartedAsync(
+                remoteString,
+                startedOccurredAt,
+                correlationId,
+                CancellationToken.None);
 
         string outcome = "failed";
         bool succeeded = false;
@@ -262,6 +272,12 @@ public class EchoWorker(
 
         DateTimeOffset stoppedOccurredAt = DateTimeOffset.UtcNow;
 
+        if (isIgnoredTelemetrySource)
+        {
+            return;
+        }
+
+        Debug.Assert(startedTelemetryTask is not null);
         await ObserveStartedTelemetryAsync(startedTelemetryTask);
 
         await PublishStreamingStoppedAsync(
@@ -273,6 +289,23 @@ public class EchoWorker(
             stoppedOccurredAt,
             correlationId,
             CancellationToken.None);
+    }
+
+    private bool IsIgnoredTelemetrySource(
+        EndPoint? remote)
+    {
+        var remoteAddress = (remote as IPEndPoint)?
+            .Address
+            .MapToIPv4()
+            .ToString();
+
+        return
+            !string.IsNullOrWhiteSpace(
+                options.Value.TelemetryIgnoredRemoteAddress) &&
+            string.Equals(
+                remoteAddress,
+                options.Value.TelemetryIgnoredRemoteAddress,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task PublishStreamingStartedAsync(

@@ -292,10 +292,122 @@ public class EchoWorkerTests
         });
     }
 
+    [Fact]
+    public async Task ProcessEchoSessionAsync_MatchingIgnoredAddressSuppressesBothEventsAndStillEchoes()
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            telemetryIgnoredRemoteAddress: "172.21.0.1");
+        var stream = new ScriptedStream("monitor"u8.ToArray());
+        var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
+
+        await worker.ProcessEchoSessionAsync(stream, remote, CancellationToken.None);
+
+        Assert.Equal("monitor"u8.ToArray(), stream.WrittenBytes);
+        Assert.Empty(recording.PublishedEvents);
+    }
+
+    [Fact]
+    public async Task ProcessEchoSessionAsync_NonMatchingIgnoredAddressStillPublishesPair()
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            telemetryIgnoredRemoteAddress: "172.21.0.1");
+        var stream = new ScriptedStream("real"u8.ToArray());
+
+        await worker.ProcessEchoSessionAsync(stream, Remote, CancellationToken.None);
+
+        RecordedMissionControlEvent[] events = recording.PublishedEvents.ToArray();
+        Assert.Equal(2, events.Length);
+        Assert.Equal(HappyEchoEventTypes.StreamingStarted, events[0].EventType);
+        Assert.Equal(HappyEchoEventTypes.StreamingStopped, events[1].EventType);
+        Assert.False(string.IsNullOrWhiteSpace(events[0].CorrelationId));
+        Assert.Equal(events[0].CorrelationId, events[1].CorrelationId);
+    }
+
+    [Fact]
+    public async Task ProcessEchoSessionAsync_Ipv4MappedIpv6IgnoredAddressSuppressesBothEvents()
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            telemetryIgnoredRemoteAddress: "172.21.0.1");
+        var stream = new ScriptedStream("mapped"u8.ToArray());
+        var remote = new IPEndPoint(
+            IPAddress.Parse("::ffff:172.21.0.1"),
+            54321);
+
+        await worker.ProcessEchoSessionAsync(stream, remote, CancellationToken.None);
+
+        Assert.Equal("mapped"u8.ToArray(), stream.WrittenBytes);
+        Assert.Empty(recording.PublishedEvents);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessEchoSessionAsync_MissingIgnoredAddressDoesNotSuppressTelemetry(
+        string? telemetryIgnoredRemoteAddress)
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            telemetryIgnoredRemoteAddress: telemetryIgnoredRemoteAddress);
+        var stream = new ScriptedStream("normal"u8.ToArray());
+        var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
+
+        await worker.ProcessEchoSessionAsync(stream, remote, CancellationToken.None);
+
+        RecordedMissionControlEvent[] events = recording.PublishedEvents.ToArray();
+        Assert.Equal(2, events.Length);
+        Assert.Equal(HappyEchoEventTypes.StreamingStarted, events[0].EventType);
+        Assert.Equal(HappyEchoEventTypes.StreamingStopped, events[1].EventType);
+    }
+
+    [Fact]
+    public async Task ProcessEchoSessionAsync_IgnoredTimedOutSessionPublishesNoEvents()
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            requestTimeoutSeconds: 0,
+            telemetryIgnoredRemoteAddress: "172.21.0.1");
+        var stream = new BlockingReadStream();
+        var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
+
+        await worker.ProcessEchoSessionAsync(stream, remote, CancellationToken.None);
+
+        Assert.Empty(recording.PublishedEvents);
+    }
+
+    [Fact]
+    public async Task ProcessEchoSessionAsync_IgnoredIoFailurePublishesNoEvents()
+    {
+        var recording = new RecordingMissionControlClient();
+        EchoWorker worker = CreateWorker(
+            recording,
+            telemetryIgnoredRemoteAddress: "172.21.0.1");
+        var stream = new ScriptedStream("abc"u8.ToArray(), "def"u8.ToArray())
+        {
+            ThrowOnWriteNumber = 2,
+            WriteException = new IOException("broken pipe")
+        };
+        var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
+
+        await worker.ProcessEchoSessionAsync(stream, remote, CancellationToken.None);
+
+        Assert.Equal("abc"u8.ToArray(), stream.WrittenBytes);
+        Assert.Empty(recording.PublishedEvents);
+    }
+
     private static EchoWorker CreateWorker(
         IMissionControlClient missionControlClient,
         int requestTimeoutSeconds = 15,
-        long maxBytesPerConnection = 1_048_576) =>
+        long maxBytesPerConnection = 1_048_576,
+        string? telemetryIgnoredRemoteAddress = null) =>
         new(
             NullLogger<EchoWorker>.Instance,
             missionControlClient,
@@ -305,7 +417,8 @@ public class EchoWorkerTests
                 Port = 7,
                 MaxConcurrentConnections = 64,
                 RequestTimeoutSeconds = requestTimeoutSeconds,
-                MaxBytesPerConnection = maxBytesPerConnection
+                MaxBytesPerConnection = maxBytesPerConnection,
+                TelemetryIgnoredRemoteAddress = telemetryIgnoredRemoteAddress
             }));
 
     private sealed class ThrowingByEventMissionControlClient(
