@@ -19,6 +19,9 @@ It implements the classic Echo Protocol: every byte received from a client is se
 * Windows Service support
 * Structured logging
 
+# Try it live
+Connect to TCP port 7 echo.kgivler.com and send bytes.
+
 ## Requirements
 
 To build HappyEcho:
