@@ -106,7 +106,7 @@ public class EchoWorker(
             EndPoint? remote = client.Client.RemoteEndPoint;
 
             // Mitigate Loop Attacks (Block local / loopback sources)
-            if (client.Client.RemoteEndPoint is IPEndPoint ipEndPoint)
+            if (client.Client.RemoteEndPoint is IPEndPoint ipEndPoint && options.Value.BlockLocalConnections)
             {
                 if (IPAddress.IsLoopback(ipEndPoint.Address) || ipEndPoint.Address.Equals(_localBoundAddress))
                 {
