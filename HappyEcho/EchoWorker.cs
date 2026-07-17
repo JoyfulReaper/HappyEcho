@@ -41,7 +41,7 @@ public class EchoWorker(
         try
         {
             TcpClient client;
-            while (!stoppingToken.IsCancellationRequested)
+            while (!_stopRequested && !stoppingToken.IsCancellationRequested)
             {
                 try
                 {
