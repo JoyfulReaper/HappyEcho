@@ -4,7 +4,7 @@
  * Licensed under the MIT License.
  */
 
-namespace HappyEcho;
+namespace HappyEcho.Events;
 
 public static class HappyEchoEventTypes
 {

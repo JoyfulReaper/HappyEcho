@@ -1,4 +1,4 @@
-using HappyEcho;
+using HappyEcho.Events;
 using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;

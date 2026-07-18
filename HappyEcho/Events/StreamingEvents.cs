@@ -4,7 +4,7 @@
  * Licensed under the MIT License.
  */
 
-namespace HappyEcho;
+namespace HappyEcho.Events;
 
 public sealed record StreamingStartedEvent(
     string Remote,
