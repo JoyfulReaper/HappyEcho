@@ -36,8 +36,26 @@ public class EchoWorker(
         _localBoundAddress = IPAddressUtils.ParseListenAddress(options.Value.ListenAddress);
         _listener = new TcpListener(_localBoundAddress, options.Value.Port);
         _listener.Start();
+        var occurredAt = DateTimeOffset.UtcNow;
 
         logger.LogInformation("HappyEcho server started on {IPAddress}:{Port}", _localBoundAddress, options.Value.Port);
+
+        try
+        {
+            await missionControlClient.TryPublishAsync(
+                eventType: HappyEchoEventTypes.ServiceStarted,
+                payload: new EchoServiceStartedEvent(
+                    $"{_localBoundAddress} {options.Value.Port}"),
+                occurredAt: occurredAt,
+                correlationId: null,
+                cancellationToken: stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to publish Mission Control event for Echo Service Started");
+        }
 
         try
         {
