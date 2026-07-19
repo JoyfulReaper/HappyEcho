@@ -1,5 +1,6 @@
 using JoyfulReaperLib.MissionControl;
 using System.Collections.Concurrent;
+using System.Text.Json.Serialization.Metadata;
 
 namespace HappyEcho.Tests;
 
@@ -22,6 +23,7 @@ public sealed class RecordingMissionControlClient : IMissionControlClient
     public Task<bool> TryPublishAsync<TPayload>(
         string eventType,
         TPayload payload,
+        JsonTypeInfo<TPayload> payloadTypeInfo,
         DateTimeOffset occurredAt,
         string? correlationId = null,
         CancellationToken cancellationToken = default)

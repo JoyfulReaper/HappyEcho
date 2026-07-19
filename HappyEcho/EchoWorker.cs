@@ -46,6 +46,7 @@ public class EchoWorker(
                 eventType: HappyEchoEventTypes.ServiceStarted,
                 payload: new EchoServiceStartedEvent(
                     $"{_localBoundAddress} {options.Value.Port}"),
+                payloadTypeInfo: HappyEchoJsonContext.Default.EchoServiceStartedEvent,
                 occurredAt: occurredAt,
                 correlationId: null,
                 cancellationToken: stoppingToken);
@@ -340,6 +341,7 @@ public class EchoWorker(
                 remote,
                 options.Value.RequestTimeoutSeconds,
                 options.Value.MaxBytesPerConnection),
+            payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStartedEvent,
             occurredAt,
             correlationId,
             cancellationToken);
@@ -380,6 +382,7 @@ public class EchoWorker(
                     durationMilliseconds,
                     outcome,
                     succeeded),
+                payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStoppedEvent,
                 occurredAt,
                 correlationId,
                 cancellationToken);
