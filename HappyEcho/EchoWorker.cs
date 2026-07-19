@@ -45,7 +45,7 @@ public class EchoWorker(
             await missionControlClient.TryPublishAsync(
                 eventType: HappyEchoEventTypes.ServiceStarted,
                 payload: new EchoServiceStartedEvent(
-                    $"{_localBoundAddress} {options.Value.Port}"),
+                    $"{_localBoundAddress}:{options.Value.Port}"),
                 payloadTypeInfo: HappyEchoJsonContext.Default.EchoServiceStartedEvent,
                 occurredAt: occurredAt,
                 correlationId: null,
