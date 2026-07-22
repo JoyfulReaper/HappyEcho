@@ -21,6 +21,9 @@ public class EchoWorker(
     IMissionControlClient missionControlClient,
     IOptions<HappyEchoOptions> options) : BackgroundService
 {
+    private static readonly TimeSpan TelemetryPublishTimeout =
+        TimeSpan.FromSeconds(2);
+
     private TcpListener? _listener;
     private readonly ConcurrentDictionary<long, Task> _activeConnections = new();
     private volatile bool _stopRequested;
@@ -30,33 +33,22 @@ public class EchoWorker(
     );
     private long _nextConnectionId;
     private IPAddress? _localBoundAddress;
+    public int BoundPort { get; private set; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _localBoundAddress = IPAddressUtils.ParseListenAddress(options.Value.ListenAddress);
         _listener = new TcpListener(_localBoundAddress, options.Value.Port);
         _listener.Start();
+        BoundPort = ((IPEndPoint)_listener.LocalEndpoint).Port;
         var occurredAt = DateTimeOffset.UtcNow;
 
         logger.LogInformation("HappyEcho server started on {IPAddress}:{Port}", _localBoundAddress, options.Value.Port);
 
-        try
-        {
-            await missionControlClient.TryPublishAsync(
-                eventType: HappyEchoEventTypes.ServiceStarted,
-                payload: new EchoServiceStartedEvent(
-                    $"{_localBoundAddress}:{options.Value.Port}"),
-                payloadTypeInfo: HappyEchoJsonContext.Default.EchoServiceStartedEvent,
-                occurredAt: occurredAt,
-                correlationId: null,
-                cancellationToken: stoppingToken);
-        }
-        catch (Exception exception)
-        {
-            logger.LogWarning(
-                exception,
-                "Failed to publish Mission Control event for Echo Service Started");
-        }
+        await PublishServiceStartedTelemetryAsync(
+            $"{_localBoundAddress}:{options.Value.Port}",
+            occurredAt,
+            stoppingToken);
 
         try
         {
@@ -90,7 +82,6 @@ public class EchoWorker(
                 _ = task.ContinueWith(t =>
                 {
                     _activeConnections.TryRemove(connectionId, out _);
-                    _connectionLimit.Release();
                 },
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
@@ -120,69 +111,109 @@ public class EchoWorker(
         TcpClient client,
         CancellationToken stoppingToken)
     {
+        Task? startedTelemetryTask = null;
+        EchoSessionTelemetryResult? telemetry = null;
+
         using (client)
         {
-            client.NoDelay = true;
-            EndPoint? remote = client.Client.RemoteEndPoint;
-
-
-            // Mitigate Loop Attacks (Block local / loopback sources)
-            if (client.Client.RemoteEndPoint is IPEndPoint ipEndPoint && options.Value.BlockLoopbackConnections)
-            {
-                if (IPAddress.IsLoopback(ipEndPoint.Address) || ipEndPoint.Address.Equals(_localBoundAddress))
-                {
-                    logger.LogWarning("[SECURITY] Dropped loopback connection from {remote}", remote);
-                    client.Close();
-                    return;
-                }
-            }
-
-
             try
             {
-                logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
-                NetworkStream stream = client.GetStream();
-                await ProcessEchoSessionAsync(stream, remote, stoppingToken);
+                client.NoDelay = true;
+                EndPoint? remote = client.Client.RemoteEndPoint;
+
+
+                // Mitigate Loop Attacks (Block local / loopback sources)
+                if (client.Client.RemoteEndPoint is IPEndPoint ipEndPoint && options.Value.BlockLoopbackConnections)
+                {
+                    if (IPAddress.IsLoopback(ipEndPoint.Address) || ipEndPoint.Address.Equals(_localBoundAddress))
+                    {
+                        logger.LogWarning("[SECURITY] Dropped loopback connection from {remote}", remote);
+                        client.Close();
+                        return;
+                    }
+                }
+
+                bool isIgnoredTelemetrySource = IsIgnoredTelemetrySource(remote);
+                string correlationId = Guid.NewGuid().ToString("N");
+
+                if (!isIgnoredTelemetrySource)
+                {
+                    startedTelemetryTask = PublishStreamingStartedAsync(
+                        remote?.ToString() ?? "unknown",
+                        DateTimeOffset.UtcNow,
+                        correlationId,
+                        stoppingToken);
+                }
+
+                try
+                {
+                    logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
+                    await using NetworkStream stream = client.GetStream();
+                    telemetry = await ProcessEchoProtocolAsync(
+                        stream,
+                        remote,
+                        isIgnoredTelemetrySource,
+                        correlationId,
+                        stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    logger.LogDebug(
+                        "Connection {ConnectionId} from {Remote} timed out.",
+                        connectionId,
+                        remote);
+                }
+                catch (InvalidDataException exception)
+                {
+                    logger.LogInformation(
+                        exception,
+                        "Rejected malformed request on connection {ConnectionId} from {Remote}.",
+                        connectionId,
+                        remote);
+                }
+                catch (IOException exception)
+                {
+                    logger.LogDebug(
+                        exception,
+                        "Connection {ConnectionId} from {Remote} ended early.",
+                        connectionId,
+                        remote);
+                }
+                catch (SocketException exception)
+                {
+                    logger.LogDebug(
+                        exception,
+                        "Socket error on connection {ConnectionId} from {Remote}.",
+                        connectionId,
+                        remote);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(
+                        exception,
+                        "Unhandled error on connection {ConnectionId} from {Remote}.",
+                        connectionId,
+                        remote);
+                }
             }
-            catch (OperationCanceledException)
+            finally
             {
-                logger.LogDebug(
-                    "Connection {ConnectionId} from {Remote} timed out.",
-                    connectionId,
-                    remote);
+                _connectionLimit.Release();
             }
-            catch (InvalidDataException exception)
-            {
-                logger.LogInformation(
-                    exception,
-                    "Rejected malformed request on connection {ConnectionId} from {Remote}.",
-                    connectionId,
-                    remote);
-            }
-            catch (IOException exception)
-            {
-                logger.LogDebug(
-                    exception,
-                    "Connection {ConnectionId} from {Remote} ended early.",
-                    connectionId,
-                    remote);
-            }
-            catch (SocketException exception)
-            {
-                logger.LogDebug(
-                    exception,
-                    "Socket error on connection {ConnectionId} from {Remote}.",
-                    connectionId,
-                    remote);
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(
-                    exception,
-                    "Unhandled error on connection {ConnectionId} from {Remote}.",
-                    connectionId,
-                    remote);
-            }
+        }
+
+        if (startedTelemetryTask is not null)
+        {
+            await ObserveStartedTelemetryAsync(
+                startedTelemetryTask,
+                stoppingToken);
+        }
+
+        if (telemetry is not null)
+        {
+            await PublishStreamingStoppedAsync(
+                telemetry,
+                stoppingToken);
         }
     }
 
@@ -191,8 +222,54 @@ public class EchoWorker(
         EndPoint? remote,
         CancellationToken stoppingToken)
     {
-        string remoteString = remote?.ToString() ?? "unknown";
         bool isIgnoredTelemetrySource = IsIgnoredTelemetrySource(remote);
+        string correlationId = Guid.NewGuid().ToString("N");
+        Task? startedTelemetryTask = isIgnoredTelemetrySource
+            ? null
+            : PublishStreamingStartedAsync(
+                remote?.ToString() ?? "unknown",
+                DateTimeOffset.UtcNow,
+                correlationId,
+                stoppingToken);
+        EchoSessionTelemetryResult? telemetry;
+
+        try
+        {
+            telemetry = await ProcessEchoProtocolAsync(
+                stream,
+                remote,
+                isIgnoredTelemetrySource,
+                correlationId,
+                stoppingToken);
+        }
+        finally
+        {
+            await stream.DisposeAsync();
+        }
+
+        if (startedTelemetryTask is not null)
+        {
+            await ObserveStartedTelemetryAsync(
+                startedTelemetryTask,
+                stoppingToken);
+        }
+
+        if (telemetry is not null)
+        {
+            await PublishStreamingStoppedAsync(
+                telemetry,
+                stoppingToken);
+        }
+    }
+
+    private async Task<EchoSessionTelemetryResult?> ProcessEchoProtocolAsync(
+        Stream stream,
+        EndPoint? remote,
+        bool isIgnoredTelemetrySource,
+        string correlationId,
+        CancellationToken stoppingToken)
+    {
+        string remoteString = remote?.ToString() ?? "unknown";
         Stopwatch stopwatch = Stopwatch.StartNew();
         var state = new EchoSessionState();
 
@@ -202,16 +279,6 @@ public class EchoWorker(
                 "Skipping telemetry for monitoring connection from {Remote}.",
                 remote);
         }
-
-        string correlationId = Guid.NewGuid().ToString("N");
-        DateTimeOffset startedOccurredAt = DateTimeOffset.UtcNow;
-        Task? startedTelemetryTask = isIgnoredTelemetrySource
-            ? null
-            : PublishStreamingStartedAsync(
-                remoteString,
-                startedOccurredAt,
-                correlationId,
-                CancellationToken.None);
 
         string outcome = "failed";
         bool succeeded = false;
@@ -234,7 +301,6 @@ public class EchoWorker(
         when (stoppingToken.IsCancellationRequested)
         {
             outcome = "server-shutdown";
-
             logger.LogDebug(
                 "Echo session from {Remote} was cancelled during shutdown.",
                 remote);
@@ -242,7 +308,6 @@ public class EchoWorker(
         catch (OperationCanceledException)
         {
             outcome = "timeout";
-
             logger.LogDebug(
                 "Echo session from {Remote} timed out.",
                 remote);
@@ -250,7 +315,6 @@ public class EchoWorker(
         catch (IOException exception)
         {
             outcome = "io-error";
-
             logger.LogDebug(
                 exception,
                 "Echo session from {Remote} ended early.",
@@ -259,7 +323,6 @@ public class EchoWorker(
         catch (SocketException exception)
         {
             outcome = "socket-error";
-
             logger.LogDebug(
                 exception,
                 "Socket error during echo session from {Remote}.",
@@ -268,7 +331,6 @@ public class EchoWorker(
         catch (Exception exception)
         {
             outcome = "failed";
-
             logger.LogError(
                 exception,
                 "Unhandled error during echo session from {Remote}.",
@@ -277,39 +339,21 @@ public class EchoWorker(
         finally
         {
             stopwatch.Stop();
-
-            try
-            {
-                await stream.DisposeAsync();
-            }
-            catch (Exception exception)
-            {
-                logger.LogDebug(
-                    exception,
-                    "Failed to dispose echo stream for {Remote}.",
-                    remote);
-            }
         }
-
-        DateTimeOffset stoppedOccurredAt = DateTimeOffset.UtcNow;
 
         if (isIgnoredTelemetrySource)
         {
-            return;
+            return null;
         }
 
-        Debug.Assert(startedTelemetryTask is not null);
-        await ObserveStartedTelemetryAsync(startedTelemetryTask);
-
-        await PublishStreamingStoppedAsync(
+        return new EchoSessionTelemetryResult(
             remoteString,
             state.BytesEchoed,
             stopwatch.ElapsedMilliseconds,
             outcome,
             succeeded,
-            stoppedOccurredAt,
-            correlationId,
-            CancellationToken.None);
+            DateTimeOffset.UtcNow,
+            correlationId);
     }
 
     private bool IsIgnoredTelemetrySource(
@@ -335,24 +379,46 @@ public class EchoWorker(
         string correlationId,
         CancellationToken cancellationToken)
     {
-        await missionControlClient.TryPublishAsync(
-            eventType: HappyEchoEventTypes.StreamingStarted,
-            payload: new StreamingStartedEvent(
-                remote,
-                options.Value.RequestTimeoutSeconds,
-                options.Value.MaxBytesPerConnection),
-            payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStartedEvent,
-            occurredAt,
-            correlationId,
-            cancellationToken);
+        using var timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TelemetryPublishTimeout);
+
+        bool published = await missionControlClient.TryPublishAsync(
+                eventType: HappyEchoEventTypes.StreamingStarted,
+                payload: new StreamingStartedEvent(
+                    remote,
+                    options.Value.RequestTimeoutSeconds,
+                    options.Value.MaxBytesPerConnection),
+                payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStartedEvent,
+                occurredAt,
+                correlationId,
+                timeout.Token);
+
+        if (!published)
+        {
+            logger.LogWarning(
+                "Mission Control did not accept {EventType}",
+                HappyEchoEventTypes.StreamingStarted);
+        }
     }
 
     private async Task ObserveStartedTelemetryAsync(
-        Task startedTelemetryTask)
+        Task startedTelemetryTask,
+        CancellationToken stoppingToken)
     {
         try
         {
             await startedTelemetryTask;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            logger.LogDebug(
+                "Streaming started telemetry publishing stopped during shutdown.");
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogWarning(
+                "Timed out publishing Mission Control streaming started event.");
         }
         catch (Exception exception)
         {
@@ -363,35 +429,94 @@ public class EchoWorker(
     }
 
     private async Task PublishStreamingStoppedAsync(
-        string remote,
-        long bytesEchoed,
-        long durationMilliseconds,
-        string outcome,
-        bool succeeded,
-        DateTimeOffset occurredAt,
-        string correlationId,
+        EchoSessionTelemetryResult telemetry,
         CancellationToken cancellationToken)
     {
+        using var timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TelemetryPublishTimeout);
+
         try
         {
-            await missionControlClient.TryPublishAsync(
+            bool published = await missionControlClient.TryPublishAsync(
                 eventType: HappyEchoEventTypes.StreamingStopped,
                 payload: new StreamingStoppedEvent(
-                    remote,
-                    bytesEchoed,
-                    durationMilliseconds,
-                    outcome,
-                    succeeded),
+                    telemetry.Remote,
+                    telemetry.BytesEchoed,
+                    telemetry.DurationMilliseconds,
+                    telemetry.Outcome,
+                    telemetry.Succeeded),
                 payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStoppedEvent,
-                occurredAt,
-                correlationId,
-                cancellationToken);
+                telemetry.OccurredAt,
+                telemetry.CorrelationId,
+                timeout.Token);
+
+            if (!published)
+            {
+                logger.LogWarning(
+                    "Mission Control did not accept {EventType}",
+                    HappyEchoEventTypes.StreamingStopped);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            logger.LogDebug(
+                "Streaming stopped telemetry publishing stopped during shutdown.");
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogWarning(
+                "Timed out publishing Mission Control streaming stopped event.");
         }
         catch (Exception exception)
         {
             logger.LogWarning(
                 exception,
                 "Failed to publish Mission Control streaming stopped event.");
+        }
+    }
+
+    private async Task PublishServiceStartedTelemetryAsync(
+        string endpoint,
+        DateTimeOffset occurredAt,
+        CancellationToken stoppingToken)
+    {
+        using var timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        timeout.CancelAfter(TelemetryPublishTimeout);
+
+        try
+        {
+            bool published = await missionControlClient.TryPublishAsync(
+                eventType: HappyEchoEventTypes.ServiceStarted,
+                payload: new EchoServiceStartedEvent(endpoint),
+                payloadTypeInfo: HappyEchoJsonContext.Default.EchoServiceStartedEvent,
+                occurredAt: occurredAt,
+                correlationId: null,
+                cancellationToken: timeout.Token);
+
+            if (!published)
+            {
+                logger.LogWarning(
+                    "Mission Control did not accept {EventType}",
+                    HappyEchoEventTypes.ServiceStarted);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            logger.LogDebug(
+                "Service-started telemetry publishing stopped during shutdown.");
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogWarning(
+                "Timed out publishing Mission Control event for Echo Service Started.");
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to publish Mission Control event for Echo Service Started");
         }
     }
 
@@ -471,4 +596,13 @@ public class EchoWorker(
 
         return base.StopAsync(cancellationToken);
     }
+
+    private sealed record EchoSessionTelemetryResult(
+        string Remote,
+        long BytesEchoed,
+        long DurationMilliseconds,
+        string Outcome,
+        bool Succeeded,
+        DateTimeOffset OccurredAt,
+        string CorrelationId);
 }

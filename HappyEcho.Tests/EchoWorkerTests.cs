@@ -2,8 +2,10 @@ using HappyEcho.Events;
 using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json.Serialization.Metadata;
 
 namespace HappyEcho.Tests;
@@ -404,6 +406,134 @@ public class EchoWorkerTests
         Assert.Empty(recording.PublishedEvents);
     }
 
+    [Fact]
+    public async Task BlockedStartedTelemetryDoesNotDelayTcpEchoTraffic()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStarted);
+        await using var server = await EchoServerHarness.StartAsync(recording);
+
+        byte[] echoed = await EchoTcpAsync(server.Port, "fast"u8.ToArray());
+
+        Assert.Equal("fast"u8.ToArray(), echoed);
+        Assert.Equal(0, recording.FinishedCount(HappyEchoEventTypes.StreamingStarted));
+
+        recording.Release();
+    }
+
+    [Fact]
+    public async Task ClientReceivesEofWhileStoppedTelemetryIsBlocked()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoServerHarness.StartAsync(recording);
+
+        byte[] echoed = await EchoTcpAsync(server.Port, "done"u8.ToArray());
+        await recording.WaitForStartedCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal("done"u8.ToArray(), echoed);
+        Assert.Equal(0, recording.FinishedCount(HappyEchoEventTypes.StreamingStopped));
+
+        recording.Release();
+    }
+
+    [Fact]
+    public async Task ConnectionSlotIsReleasedBeforeStoppedTelemetryCompletes()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoServerHarness.StartAsync(
+            recording,
+            maxConcurrentConnections: 1);
+
+        byte[] first = await EchoTcpAsync(server.Port, "one"u8.ToArray());
+        await recording.WaitForStartedCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            TimeSpan.FromSeconds(2));
+
+        byte[] second = await EchoTcpAsync(server.Port, "two"u8.ToArray());
+        await recording.WaitForStartedCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            2,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal("one"u8.ToArray(), first);
+        Assert.Equal("two"u8.ToArray(), second);
+        Assert.Equal(0, recording.FinishedCount(HappyEchoEventTypes.StreamingStopped));
+
+        recording.Release();
+    }
+
+    [Fact]
+    public async Task StartedTelemetryTimeoutIsBounded()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStarted);
+        EchoWorker worker = CreateWorker(recording);
+        var stream = new ScriptedStream("safe"u8.ToArray());
+
+        await worker.ProcessEchoSessionAsync(stream, Remote, CancellationToken.None);
+
+        Assert.Equal("safe"u8.ToArray(), stream.WrittenBytes);
+        Assert.Equal(1, recording.CanceledCount(HappyEchoEventTypes.StreamingStarted));
+        Assert.Contains(
+            recording.PublishedEvents,
+            e => e.EventType == HappyEchoEventTypes.StreamingStopped);
+    }
+
+    [Fact]
+    public async Task StoppedTelemetryTimeoutIsBounded()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStopped);
+        EchoWorker worker = CreateWorker(recording);
+        var stream = new ScriptedStream("safe"u8.ToArray());
+
+        await worker.ProcessEchoSessionAsync(stream, Remote, CancellationToken.None);
+
+        Assert.Equal("safe"u8.ToArray(), stream.WrittenBytes);
+        Assert.Equal(1, recording.CanceledCount(HappyEchoEventTypes.StreamingStopped));
+    }
+
+    [Fact]
+    public async Task StartupTelemetryTimeoutDoesNotPreventAcceptingConnections()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.ServiceStarted);
+        await using var server = await EchoServerHarness.StartAsync(recording);
+
+        byte[] echoed = await EchoTcpAsync(
+            server.Port,
+            "startup"u8.ToArray(),
+            TimeSpan.FromSeconds(5));
+
+        Assert.Equal("startup"u8.ToArray(), echoed);
+        Assert.Equal(1, recording.CanceledCount(HappyEchoEventTypes.ServiceStarted));
+    }
+
+    [Fact]
+    public async Task ShutdownCompletesWithBlockedStoppedTelemetry()
+    {
+        var recording = new BlockingByEventMissionControlClient(
+            HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoServerHarness.StartAsync(recording);
+
+        byte[] echoed = await EchoTcpAsync(server.Port, "stop"u8.ToArray());
+        await recording.WaitForStartedCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            TimeSpan.FromSeconds(2));
+
+        await server.StopAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal("stop"u8.ToArray(), echoed);
+        Assert.True(server.Stopped);
+    }
+
     private static EchoWorker CreateWorker(
         IMissionControlClient missionControlClient,
         int requestTimeoutSeconds = 15,
@@ -421,6 +551,87 @@ public class EchoWorkerTests
                 MaxBytesPerConnection = maxBytesPerConnection,
                 TelemetryIgnoredRemoteAddress = telemetryIgnoredRemoteAddress
             }));
+
+    private static async Task<byte[]> EchoTcpAsync(
+        int port,
+        byte[] payload,
+        TimeSpan? timeout = null)
+    {
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, port).WaitAsync(
+            TimeSpan.FromSeconds(2));
+        await using NetworkStream stream = client.GetStream();
+        await stream.WriteAsync(payload).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        client.Client.Shutdown(SocketShutdown.Send);
+
+        using var output = new MemoryStream();
+        await stream.CopyToAsync(output).WaitAsync(timeout ?? TimeSpan.FromSeconds(2));
+        return output.ToArray();
+    }
+
+    private sealed class EchoServerHarness : IAsyncDisposable
+    {
+        private readonly EchoWorker _worker;
+
+        private EchoServerHarness(EchoWorker worker)
+        {
+            _worker = worker;
+        }
+
+        public int Port => _worker.BoundPort;
+        public bool Stopped { get; private set; }
+
+        public static async Task<EchoServerHarness> StartAsync(
+            IMissionControlClient missionControlClient,
+            int maxConcurrentConnections = 4)
+        {
+            var worker = new EchoWorker(
+                NullLogger<EchoWorker>.Instance,
+                missionControlClient,
+                Options.Create(new HappyEchoOptions
+                {
+                    ListenAddress = "127.0.0.1",
+                    Port = 0,
+                    MaxConcurrentConnections = maxConcurrentConnections,
+                    RequestTimeoutSeconds = 1,
+                    MaxBytesPerConnection = 1_048_576,
+                    BlockLoopbackConnections = false
+                }));
+
+            var harness = new EchoServerHarness(worker);
+            await worker.StartAsync(CancellationToken.None);
+            await harness.WaitForPortAsync();
+            return harness;
+        }
+
+        private async Task WaitForPortAsync()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            while (Port == 0)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+
+        public async Task StopAsync(TimeSpan? timeout = null)
+        {
+            if (Stopped)
+            {
+                return;
+            }
+
+            using var stopTimeout = new CancellationTokenSource(
+                timeout ?? TimeSpan.FromSeconds(5));
+            await _worker.StopAsync(stopTimeout.Token);
+            Stopped = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopAsync();
+        }
+    }
 
     private sealed class ThrowingByEventMissionControlClient(
         string eventTypeToThrow) : IMissionControlClient
@@ -445,6 +656,85 @@ public class EchoWorkerTests
             }
 
             return Task.FromResult(true);
+        }
+    }
+
+    private sealed class BlockingByEventMissionControlClient(
+        string eventTypeToBlock) : IMissionControlClient
+    {
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _startedSignals = new();
+        private readonly ConcurrentDictionary<string, int> _startedCounts = new();
+        private readonly ConcurrentDictionary<string, int> _finishedCounts = new();
+        private readonly ConcurrentDictionary<string, int> _canceledCounts = new();
+        private readonly ConcurrentQueue<RecordedMissionControlEvent> _events = new();
+
+        public IReadOnlyList<RecordedMissionControlEvent> PublishedEvents => _events.ToArray();
+
+        public async Task<bool> TryPublishAsync<TPayload>(
+            string eventType,
+            TPayload payload,
+            JsonTypeInfo<TPayload> payloadTypeInfo,
+            DateTimeOffset occurredAt,
+            string? correlationId = null,
+            CancellationToken cancellationToken = default)
+        {
+            _events.Enqueue(new RecordedMissionControlEvent(
+                eventType,
+                payload,
+                occurredAt,
+                correlationId));
+
+            if (eventType != eventTypeToBlock)
+            {
+                return true;
+            }
+
+            _startedCounts.AddOrUpdate(eventType, 1, (_, count) => count + 1);
+            _startedSignals.GetOrAdd(eventType, _ => new SemaphoreSlim(0)).Release();
+
+            try
+            {
+                await _release.Task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _canceledCounts.AddOrUpdate(eventType, 1, (_, count) => count + 1);
+                throw;
+            }
+            finally
+            {
+                _finishedCounts.AddOrUpdate(eventType, 1, (_, count) => count + 1);
+            }
+
+            return true;
+        }
+
+        public void Release() =>
+            _release.TrySetResult();
+
+        public int FinishedCount(string eventType) =>
+            _finishedCounts.TryGetValue(eventType, out int count) ? count : 0;
+
+        public int CanceledCount(string eventType) =>
+            _canceledCounts.TryGetValue(eventType, out int count) ? count : 0;
+
+        public async Task WaitForStartedCountAsync(
+            string eventType,
+            int expectedCount,
+            TimeSpan timeout)
+        {
+            using var cancellation = new CancellationTokenSource(timeout);
+            SemaphoreSlim signal = _startedSignals.GetOrAdd(
+                eventType,
+                _ => new SemaphoreSlim(0));
+
+            while ((!_startedCounts.TryGetValue(eventType, out int count)) ||
+                count < expectedCount)
+            {
+                await signal.WaitAsync(cancellation.Token);
+            }
         }
     }
 
