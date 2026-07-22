@@ -29,6 +29,11 @@ WORKDIR /app
 
 COPY --from=build /app/publish .
 
-EXPOSE 7
+ENV Echo__ListenAddress=0.0.0.0
+ENV Echo__Port=7007
+
+EXPOSE 7007
+
+USER $APP_UID
 
 ENTRYPOINT ["./HappyEcho"]

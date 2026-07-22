@@ -178,12 +178,38 @@ docker build --no-cache -t joyful/happyecho:test .
 The Dockerfile:
 
 * Restores, tests, and publishes in a .NET SDK build stage.
-* Uses the .NET runtime image for the final stage.
+* Publishes a Native AOT executable.
+* Uses the small .NET `runtime-deps` image for the final stage.
+* Does not contain the full managed .NET runtime.
 * Runs as `${APP_UID}`, not root.
-* Exposes TCP port `7`.
+* Listens internally on TCP port `7007`.
+* Can be published externally as canonical Echo TCP port `7` with `7:7007`.
 * Does not embed configuration or secrets.
 
-No Docker health check is defined. HappyEcho intentionally rejects loopback clients, and the .NET runtime image does not include a small reliable TCP probing tool such as `nc`. Compose can still verify the service process state, and listener checks should be performed externally or from the host.
+The Docker image defaults to:
+
+```dockerfile
+ENV Echo__ListenAddress=0.0.0.0
+ENV Echo__Port=7007
+```
+
+Local unprivileged mapping:
+
+```bash
+docker run --rm -p 7007:7007 happy-echo
+```
+
+Canonical public Echo mapping:
+
+```bash
+docker run --rm -p 7:7007 happy-echo
+```
+
+Publishing host port 7 may require host-level privileges on Linux and macOS,
+while the process inside the container remains non-root and needs no added
+Linux capability.
+
+No Docker health check is defined. HappyEcho intentionally rejects loopback clients, and the `runtime-deps` image does not include a small reliable TCP probing tool such as `nc`. Compose can still verify the service process state, and listener checks should be performed externally or from the host.
 
 ## Linux VPS Deployment With Docker Compose
 
@@ -238,7 +264,7 @@ happyecho:
     DOTNET_ENVIRONMENT: Production
 
     Echo__ListenAddress: 0.0.0.0
-    Echo__Port: 7
+    Echo__Port: 7007
     Echo__MaxConcurrentConnections: 64
     Echo__RequestTimeoutSeconds: 15
     Echo__MaxBytesPerConnection: 1048576
@@ -250,13 +276,10 @@ happyecho:
     MissionControl__TimeoutMilliseconds: 1000
 
   ports:
-    - "7:7/tcp"
+    - "7:7007/tcp"
 
   cap_drop:
     - ALL
-
-  cap_add:
-    - NET_BIND_SERVICE
 
   security_opt:
     - no-new-privileges:true
@@ -388,7 +411,7 @@ WantedBy=multi-user.target
 * New connections are immediately closed when all connection slots are occupied.
 * `RequestTimeoutSeconds` limits the total connection lifetime. It does not reset after each message.
 * `MaxBytesPerConnection` limits the total bytes accepted and echoed by one connection.
-* Port 7 is privileged on Linux. Use `NET_BIND_SERVICE`; do not run HappyEcho as root.
+* Port 7 is privileged on Linux. Publish host port 7 to container port 7007; do not run HappyEcho as root and do not add `NET_BIND_SERVICE` to the container.
 * Loopback health-check connections do not produce streaming telemetry because they are rejected before streaming begins.
 
 ## License
