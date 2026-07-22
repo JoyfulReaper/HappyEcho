@@ -4,6 +4,7 @@
  * Licensed under the MIT License.
  */
 
+using HappyEcho.Events;
 using JoyfulReaperLib.JRNet;
 using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Options;
@@ -35,13 +36,32 @@ public class EchoWorker(
         _localBoundAddress = IPAddressUtils.ParseListenAddress(options.Value.ListenAddress);
         _listener = new TcpListener(_localBoundAddress, options.Value.Port);
         _listener.Start();
+        var occurredAt = DateTimeOffset.UtcNow;
 
         logger.LogInformation("HappyEcho server started on {IPAddress}:{Port}", _localBoundAddress, options.Value.Port);
 
         try
         {
+            await missionControlClient.TryPublishAsync(
+                eventType: HappyEchoEventTypes.ServiceStarted,
+                payload: new EchoServiceStartedEvent(
+                    $"{_localBoundAddress}:{options.Value.Port}"),
+                payloadTypeInfo: HappyEchoJsonContext.Default.EchoServiceStartedEvent,
+                occurredAt: occurredAt,
+                correlationId: null,
+                cancellationToken: stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to publish Mission Control event for Echo Service Started");
+        }
+
+        try
+        {
             TcpClient client;
-            while (!stoppingToken.IsCancellationRequested)
+            while (!_stopRequested && !stoppingToken.IsCancellationRequested)
             {
                 try
                 {
@@ -321,6 +341,7 @@ public class EchoWorker(
                 remote,
                 options.Value.RequestTimeoutSeconds,
                 options.Value.MaxBytesPerConnection),
+            payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStartedEvent,
             occurredAt,
             correlationId,
             cancellationToken);
@@ -361,6 +382,7 @@ public class EchoWorker(
                     durationMilliseconds,
                     outcome,
                     succeeded),
+                payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStoppedEvent,
                 occurredAt,
                 correlationId,
                 cancellationToken);

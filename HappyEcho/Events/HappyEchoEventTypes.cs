@@ -4,7 +4,7 @@
  * Licensed under the MIT License.
  */
 
-namespace HappyEcho;
+namespace HappyEcho.Events;
 
 public static class HappyEchoEventTypes
 {
@@ -13,4 +13,7 @@ public static class HappyEchoEventTypes
 
     public const string StreamingStopped =
         "happyecho.streaming.stopped";
+
+    public const string ServiceStarted =
+        "happyecho.service.started";
 }

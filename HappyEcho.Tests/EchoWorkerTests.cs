@@ -1,9 +1,10 @@
-using HappyEcho;
+using HappyEcho.Events;
 using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json.Serialization.Metadata;
 
 namespace HappyEcho.Tests;
 
@@ -431,6 +432,7 @@ public class EchoWorkerTests
         public Task<bool> TryPublishAsync<TPayload>(
             string eventType,
             TPayload payload,
+            JsonTypeInfo<TPayload> payloadTypeInfo,
             DateTimeOffset occurredAt,
             string? correlationId = null,
             CancellationToken cancellationToken = default)
