@@ -61,24 +61,23 @@ public class EchoConnectionHandlerTests
     }
 
     [Fact]
-    public async Task EchoAsync_CountsOnlySuccessfullyWrittenAndFlushedBytes()
+    public async Task EchoAsync_WritesWithoutFlushing()
     {
         var stream = new ScriptedStream("abc"u8.ToArray(), "def"u8.ToArray())
         {
-            ThrowOnFlushNumber = 2,
-            FlushException = new IOException("flush failed")
+            ThrowOnFlushNumber = 1,
+            FlushException = new InvalidOperationException("EchoAsync should not flush the stream.")
         };
         var state = new EchoSessionState();
 
-        await Assert.ThrowsAsync<IOException>(() =>
-            EchoConnectionHandler.EchoAsync(
-                stream,
-                requestTimeoutSeconds: 15,
-                maxBytesPerConnection: 100,
-                CancellationToken.None,
-                state));
+        await EchoConnectionHandler.EchoAsync(
+            stream,
+            requestTimeoutSeconds: 15,
+            maxBytesPerConnection: 100,
+            CancellationToken.None,
+            state);
 
-        Assert.Equal(3, state.BytesEchoed);
+        Assert.Equal(6, state.BytesEchoed);
         Assert.Equal("abcdef"u8.ToArray(), stream.WrittenBytes);
     }
 
