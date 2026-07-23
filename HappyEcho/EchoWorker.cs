@@ -52,26 +52,28 @@ public class EchoWorker(
 
         try
         {
-            TcpClient client;
             while (!_stopRequested && !stoppingToken.IsCancellationRequested)
             {
+                TcpClient? client = null;
                 try
                 {
                     client = await _listener.AcceptTcpClientAsync(stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
+                    client?.Dispose();
                     break;
                 }
                 catch (SocketException) when (stoppingToken.IsCancellationRequested || _stopRequested)
                 {
+                    client?.Dispose();
                     break;
                 }
 
                 if (!_connectionLimit.Wait(0))
                 {
                     logger.LogInformation("[REJECTED] Server busy (All {Max} slots taken). Dropping immediate connection.", options.Value.MaxConcurrentConnections);
-                    client.Dispose();
+                    client?.Dispose();
                     continue;
                 }
 
@@ -549,20 +551,16 @@ public class EchoWorker(
         byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_SIZE);
 
         // We dont want to keep echoing data forever so we set a timeout
-        using var timeout =
-            CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(RequestTimeoutSeconds));
 
         try
         {
             while (state.BytesEchoed < maxBytesPerConnection)
             {
-                long remaining =
-                    maxBytesPerConnection - state.BytesEchoed;
+                long remaining = maxBytesPerConnection - state.BytesEchoed;
 
-                int readSize = (int)Math.Min(
-                                BUFFER_SIZE,
-                                remaining);
+                int readSize = (int)Math.Min(BUFFER_SIZE, remaining);
 
                 int bytesRead = await stream.ReadAsync(
                     buffer.AsMemory(0, readSize),
