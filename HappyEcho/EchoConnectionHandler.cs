@@ -24,16 +24,12 @@ public sealed class EchoConnectionHandler(
     IMissionControlClient missionControlClient,
     IOptions<HappyEchoOptions> options) : ITcpConnectionHandler
 {
-    private static readonly TimeSpan TelemetryPublishTimeout =
-        TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan TelemetryPublishTimeout = TimeSpan.FromSeconds(2);
 
-    private readonly IPAddress _configuredListenAddress =
-        IPAddressUtils.ParseListenAddress(options.Value.ListenAddress);
+    private readonly IPAddress _configuredListenAddress = IPAddressUtils.ParseListenAddress(options.Value.ListenAddress);
 
     /// <inheritdoc />
-    public async ValueTask HandleAsync(
-        TcpConnectionContext context,
-        CancellationToken cancellationToken)
+    public async ValueTask HandleAsync(TcpConnectionContext context, CancellationToken cancellationToken)
     {
         EndPoint? remote = context.RemoteEndPoint;
 
@@ -97,8 +93,7 @@ public sealed class EchoConnectionHandler(
 
     private bool ShouldBlockConnection(EndPoint? remote)
     {
-        if (!options.Value.BlockLoopbackConnections ||
-            remote is not IPEndPoint remoteEndPoint)
+        if (!options.Value.BlockLoopbackConnections || remote is not IPEndPoint remoteEndPoint)
         {
             return false;
         }
@@ -109,18 +104,10 @@ public sealed class EchoConnectionHandler(
 
     private bool IsIgnoredTelemetrySource(EndPoint? remote)
     {
-        string? remoteAddress = (remote as IPEndPoint)?
-            .Address
-            .MapToIPv4()
-            .ToString();
+        string? remoteAddress = (remote as IPEndPoint)?.Address.MapToIPv4().ToString();
 
-        return
-            !string.IsNullOrWhiteSpace(
-                options.Value.TelemetryIgnoredRemoteAddress) &&
-            string.Equals(
-                remoteAddress,
-                options.Value.TelemetryIgnoredRemoteAddress,
-                StringComparison.OrdinalIgnoreCase);
+        return !string.IsNullOrWhiteSpace(options.Value.TelemetryIgnoredRemoteAddress) &&
+            string.Equals(remoteAddress, options.Value.TelemetryIgnoredRemoteAddress, StringComparison.OrdinalIgnoreCase);
     }
 
     private async ValueTask CompleteTelemetryAsync(
@@ -133,8 +120,7 @@ public sealed class EchoConnectionHandler(
         {
             await startedTelemetryTask;
         }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             logger.LogDebug(
                 "Streaming-started telemetry for connection {ConnectionId} was cancelled during shutdown.",
@@ -166,8 +152,7 @@ public sealed class EchoConnectionHandler(
         string correlationId,
         CancellationToken cancellationToken)
     {
-        using var timeout =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         timeout.CancelAfter(TelemetryPublishTimeout);
 
@@ -175,12 +160,9 @@ public sealed class EchoConnectionHandler(
             eventType: HappyEchoEventTypes.StreamingStarted,
             payload: new StreamingStartedEvent(
                 Remote: remote,
-                RequestTimeoutSeconds:
-                    options.Value.RequestTimeoutSeconds,
-                MaxBytesPerConnection:
-                    options.Value.MaxBytesPerConnection),
-            payloadTypeInfo:
-                HappyEchoJsonContext.Default.StreamingStartedEvent,
+                RequestTimeoutSeconds: options.Value.RequestTimeoutSeconds,
+                MaxBytesPerConnection: options.Value.MaxBytesPerConnection),
+            payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStartedEvent,
             occurredAt: occurredAt,
             correlationId: correlationId,
             cancellationToken: timeout.Token);
@@ -198,8 +180,7 @@ public sealed class EchoConnectionHandler(
         EchoSessionTelemetryResult telemetry,
         CancellationToken cancellationToken)
     {
-        using var timeout =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         timeout.CancelAfter(TelemetryPublishTimeout);
 
@@ -210,12 +191,10 @@ public sealed class EchoConnectionHandler(
                 payload: new StreamingStoppedEvent(
                     Remote: telemetry.Remote,
                     BytesEchoed: telemetry.BytesEchoed,
-                    DurationMilliseconds:
-                        telemetry.DurationMilliseconds,
+                    DurationMilliseconds: telemetry.DurationMilliseconds,
                     Outcome: telemetry.Outcome,
                     Succeeded: telemetry.Succeeded),
-                payloadTypeInfo:
-                    HappyEchoJsonContext.Default.StreamingStoppedEvent,
+                payloadTypeInfo: HappyEchoJsonContext.Default.StreamingStoppedEvent,
                 occurredAt: telemetry.OccurredAt,
                 correlationId: telemetry.CorrelationId,
                 cancellationToken: timeout.Token);
@@ -228,8 +207,7 @@ public sealed class EchoConnectionHandler(
                     connectionId);
             }
         }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             logger.LogDebug(
                 "Streaming-stopped telemetry for connection {ConnectionId} was cancelled during shutdown.",
@@ -278,8 +256,7 @@ public sealed class EchoConnectionHandler(
 
             succeeded = true;
         }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             outcome = "server-shutdown";
 
@@ -361,24 +338,19 @@ public sealed class EchoConnectionHandler(
     {
         const int BufferSize = 4096;
 
-        byte[] buffer =
-            ArrayPool<byte>.Shared.Rent(BufferSize);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
-        using var timeout =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        timeout.CancelAfter(
-            TimeSpan.FromSeconds(requestTimeoutSeconds));
+        timeout.CancelAfter(TimeSpan.FromSeconds(requestTimeoutSeconds));
 
         try
         {
             while (state.BytesEchoed < maxBytesPerConnection)
             {
-                long remaining =
-                    maxBytesPerConnection - state.BytesEchoed;
+                long remaining = maxBytesPerConnection - state.BytesEchoed;
 
-                int readSize =
-                    (int)Math.Min(BufferSize, remaining);
+                int readSize = (int)Math.Min(BufferSize, remaining);
 
                 int bytesRead = await stream.ReadAsync(
                     buffer.AsMemory(0, readSize),
@@ -398,8 +370,7 @@ public sealed class EchoConnectionHandler(
                 state.BytesEchoed += bytesRead;
             }
 
-            state.ByteLimitReached =
-                state.BytesEchoed >= maxBytesPerConnection;
+            state.ByteLimitReached = state.BytesEchoed >= maxBytesPerConnection;
         }
         finally
         {

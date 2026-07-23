@@ -21,5 +21,5 @@ public sealed class HappyEchoOptions : ITcpServerOptions
     public bool BlockLoopbackConnections { get; set; }
 
     ConnectionLimitBehavior ITcpServerOptions.ConnectionLimitBehavior =>
-        JoyfulReaperLib.TcpServer.ConnectionLimitBehavior.Reject;
+        ConnectionLimitBehavior.Reject;
 }

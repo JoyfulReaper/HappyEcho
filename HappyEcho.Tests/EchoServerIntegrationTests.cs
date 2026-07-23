@@ -1,9 +1,9 @@
 using HappyEcho.Events;
 using JoyfulReaperLib.MissionControl;
+using JoyfulReaperLib.TcpServer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json.Serialization.Metadata;
@@ -328,6 +328,265 @@ public class EchoServerIntegrationTests
             ShortTimeout);
     }
 
+    [Fact]
+    public async Task StartedTelemetryFailure_DoesNotSuppressStoppedTelemetry()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.ThrowFor(HappyEchoEventTypes.StreamingStarted);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        byte[] payload = "safe"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForAttemptCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+        Assert.Contains(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStarted);
+        Assert.Contains(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStopped);
+    }
+
+    [Fact]
+    public async Task StoppedTelemetryFailure_DoesNotKillServer()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.ThrowFor(HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        Assert.Equal("safe"u8.ToArray(), await EchoRoundTripAsync(server.Port, "safe"u8.ToArray()));
+        await missionControl.WaitForAttemptCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+
+        Assert.Equal("again"u8.ToArray(), await EchoRoundTripAsync(server.Port, "again"u8.ToArray()));
+        await missionControl.WaitForAttemptCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            2,
+            ShortTimeout);
+    }
+
+    [Fact]
+    public async Task BlockedStartedTelemetry_DoesNotDelayEchoTraffic()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.Block(HappyEchoEventTypes.StreamingStarted);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        try
+        {
+            byte[] payload = "fast"u8.ToArray();
+            byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+            Assert.Equal(payload, echoed);
+            await missionControl.WaitForAttemptCountAsync(
+                HappyEchoEventTypes.StreamingStarted,
+                1,
+                ShortTimeout);
+            Assert.Equal(0, missionControl.SuccessfulCount(HappyEchoEventTypes.StreamingStarted));
+        }
+        finally
+        {
+            missionControl.ReleaseBlockedPublications(HappyEchoEventTypes.StreamingStarted);
+        }
+    }
+
+    [Fact]
+    public async Task StreamingTelemetry_DoesNotPublishEchoedPayloadContent()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        byte[] payload = "secret-message"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForSuccessfulCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+        Assert.All(missionControl.SuccessfulPublications, telemetry =>
+        {
+            string text = telemetry.Payload?.ToString() ?? string.Empty;
+            Assert.DoesNotContain("secret-message", text);
+        });
+    }
+
+    [Fact]
+    public async Task MatchingIgnoredAddress_SuppressesStreamingEventsAndStillEchoes()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                TelemetryIgnoredRemoteAddress = "127.0.0.1"
+            });
+
+        byte[] payload = "monitor"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        Assert.DoesNotContain(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStarted);
+        Assert.DoesNotContain(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStopped);
+    }
+
+    [Fact]
+    public async Task NonMatchingIgnoredAddress_PublishesStreamingPair()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                TelemetryIgnoredRemoteAddress = "172.21.0.1"
+            });
+
+        byte[] payload = "real"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForSuccessfulCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+
+        RecordedMissionControlEvent startedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStarted);
+        RecordedMissionControlEvent stoppedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStopped);
+
+        Assert.False(string.IsNullOrWhiteSpace(startedTelemetry.CorrelationId));
+        Assert.Equal(startedTelemetry.CorrelationId, stoppedTelemetry.CorrelationId);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task MissingIgnoredAddress_DoesNotSuppressStreamingTelemetry(
+        string? telemetryIgnoredRemoteAddress)
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                TelemetryIgnoredRemoteAddress = telemetryIgnoredRemoteAddress
+            });
+
+        byte[] payload = "normal"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForSuccessfulCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+        Assert.Contains(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStarted);
+        Assert.Contains(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.StreamingStopped);
+    }
+
+    [Fact]
+    public async Task StartedTelemetryTimeout_IsBoundedAndStoppedTelemetryIsAttempted()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.Block(HappyEchoEventTypes.StreamingStarted);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        byte[] payload = "safe"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForCanceledCountAsync(
+            HappyEchoEventTypes.StreamingStarted,
+            1,
+            TimeSpan.FromSeconds(4));
+        await missionControl.WaitForAttemptCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+    }
+
+    [Fact]
+    public async Task StoppedTelemetryTimeout_IsBounded()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.Block(HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        byte[] payload = "safe"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForCanceledCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            TimeSpan.FromSeconds(4));
+    }
+
+    [Fact]
+    public async Task StartupTelemetryTimeout_DoesNotPreventAcceptingConnections()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.Block(HappyEchoEventTypes.ServiceStarted);
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            timeout: TimeSpan.FromSeconds(4));
+
+        byte[] payload = "startup"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+
+        Assert.Equal(payload, echoed);
+        await missionControl.WaitForCanceledCountAsync(
+            HappyEchoEventTypes.ServiceStarted,
+            1,
+            TimeSpan.FromSeconds(4));
+    }
+
+    [Fact]
+    public async Task ShutdownCompletesWithBlockedStoppedTelemetry()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.Block(HappyEchoEventTypes.StreamingStopped);
+        await using var server = await EchoHost.StartAsync(missionControl);
+
+        byte[] payload = "stop"u8.ToArray();
+        byte[] echoed = await EchoRoundTripAsync(server.Port, payload);
+        await missionControl.WaitForAttemptCountAsync(
+            HappyEchoEventTypes.StreamingStopped,
+            1,
+            ShortTimeout);
+
+        await server.StopAsync(ShortTimeout);
+
+        Assert.Equal(payload, echoed);
+        Assert.True(server.Stopped);
+
+        missionControl.ReleaseBlockedPublications(HappyEchoEventTypes.StreamingStopped);
+    }
+
     private static async Task<RecordedMissionControlEvent> WaitForSingleSuccessfulStoppedAsync(
         IntegrationMissionControlClient missionControl)
     {
@@ -475,37 +734,51 @@ public class EchoServerIntegrationTests
     private sealed class EchoHost : IAsyncDisposable
     {
         private readonly IHost _host;
-        private readonly EchoWorker _worker;
         private int _stopped;
 
-        private EchoHost(IHost host, EchoWorker worker)
+        private EchoHost(IHost host, int port)
         {
             _host = host;
-            _worker = worker;
+            Port = port;
         }
 
-        public int Port => _worker.BoundPort;
+        public int Port { get; }
+        public bool Stopped => Volatile.Read(ref _stopped) == 1;
 
         public static async Task<EchoHost> StartAsync(
             IntegrationMissionControlClient missionControl,
             HappyEchoOptions? options = null,
             TimeSpan? timeout = null)
         {
-            HostApplicationBuilder builder = Host.CreateApplicationBuilder();
-            builder.Logging.ClearProviders();
-            builder.Services.AddSingleton<IMissionControlClient>(missionControl);
-            builder.Services.AddSingleton(Options.Create(options ?? new HappyEchoOptions
+            HappyEchoOptions testOptions = options ?? new HappyEchoOptions
             {
                 ListenAddress = "127.0.0.1",
                 Port = 0
-            }));
-            builder.Services.AddSingleton<EchoWorker>();
-            builder.Services.AddHostedService(
-                provider => provider.GetRequiredService<EchoWorker>());
+            };
+            int port = testOptions.Port == 0
+                ? AllocateTemporaryLoopbackPort()
+                : testOptions.Port;
+
+            HostApplicationBuilder builder = Host.CreateApplicationBuilder();
+            builder.Logging.ClearProviders();
+            builder.Services.AddSingleton<IMissionControlClient>(missionControl);
+
+            builder.Services.Configure<HappyEchoOptions>(configured =>
+            {
+                configured.ListenAddress = testOptions.ListenAddress;
+                configured.Port = port;
+                configured.MaxConcurrentConnections = testOptions.MaxConcurrentConnections;
+                configured.RequestTimeoutSeconds = testOptions.RequestTimeoutSeconds;
+                configured.MaxBytesPerConnection = testOptions.MaxBytesPerConnection;
+                configured.TelemetryIgnoredRemoteAddress = testOptions.TelemetryIgnoredRemoteAddress;
+                configured.BlockLoopbackConnections = testOptions.BlockLoopbackConnections;
+            });
+
+            builder.Services.AddTcpServer<EchoConnectionHandler, HappyEchoOptions>();
+            builder.Services.AddHostedService<EchoLifecycleService>();
 
             IHost host = builder.Build();
-            var worker = host.Services.GetRequiredService<EchoWorker>();
-            var echoHost = new EchoHost(host, worker);
+            var echoHost = new EchoHost(host, port);
 
             try
             {
@@ -515,7 +788,6 @@ public class EchoServerIntegrationTests
                     1,
                     timeout ?? HostTimeout);
 
-                Assert.NotEqual(0, echoHost.Port);
                 return echoHost;
             }
             catch
@@ -553,6 +825,7 @@ public class EchoServerIntegrationTests
     {
         private readonly object _gate = new();
         private readonly HashSet<string> _throwingEventTypes = [];
+        private readonly Dictionary<string, int> _remainingThrows = [];
         private readonly Dictionary<string, BlockedPublication> _blockedEventTypes = [];
         private readonly List<RecordedMissionControlEvent> _attempted = [];
         private readonly List<RecordedMissionControlEvent> _successful = [];
@@ -587,6 +860,14 @@ public class EchoServerIntegrationTests
             lock (_gate)
             {
                 _throwingEventTypes.Add(eventType);
+            }
+        }
+
+        public void ThrowFor(string eventType, int count)
+        {
+            lock (_gate)
+            {
+                _remainingThrows[eventType] = count;
             }
         }
 
@@ -648,7 +929,7 @@ public class EchoServerIntegrationTests
             lock (_gate)
             {
                 _attempted.Add(publication);
-                if (_throwingEventTypes.Contains(eventType))
+                if (ShouldThrow(eventType))
                 {
                     SignalChanged();
                     throw new InvalidOperationException("Configured telemetry failure.");
@@ -753,6 +1034,31 @@ public class EchoServerIntegrationTests
             _changed = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             previous.TrySetResult();
+        }
+
+        private bool ShouldThrow(string eventType)
+        {
+            if (_throwingEventTypes.Contains(eventType))
+            {
+                return true;
+            }
+
+            if (!_remainingThrows.TryGetValue(eventType, out int remaining) ||
+                remaining <= 0)
+            {
+                return false;
+            }
+
+            if (remaining == 1)
+            {
+                _remainingThrows.Remove(eventType);
+            }
+            else
+            {
+                _remainingThrows[eventType] = remaining - 1;
+            }
+
+            return true;
         }
 
         private sealed class BlockedPublication

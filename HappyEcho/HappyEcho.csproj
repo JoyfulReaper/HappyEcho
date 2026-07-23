@@ -6,19 +6,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-HappyEcho-5f5e3e37-6c43-45b6-b464-aff87c58ea11</UserSecretsId>
-	  <!-- Enable Native AOT Compilation -->
-	  <PublishAot>true</PublishAot>
+    <!-- Enable Native AOT Compilation -->
+    <PublishAot>true</PublishAot>
 
-	  <!-- Strip out all unused framework code ruthlessly -->
-	  <TrimMode>full</TrimMode>
+    <!-- Strip out all unused framework code ruthlessly -->
+    <TrimMode>full</TrimMode>
 
-	  <!-- Optimizes for size, cutting out unneeded native metadata -->
-	  <OptimizationPreference>Size</OptimizationPreference>
-	  <EnableConfigurationBindingSourceGenerator>true</EnableConfigurationBindingSourceGenerator>
+    <!-- Optimizes for size, cutting out unneeded native metadata -->
+    <OptimizationPreference>Size</OptimizationPreference>
+    <EnableConfigurationBindingSourceGenerator>true</EnableConfigurationBindingSourceGenerator>
   </PropertyGroup>
 
   <ItemGroup>
-	<PackageReference Include="JoyfulReaperLib.TcpServer" Version="0.0.2" />
+    <PackageReference Include="JoyfulReaperLib.TcpServer" Version="0.0.2" />
     <PackageReference Include="JoyfulReaperLib" Version="0.0.11" />
     <PackageReference Include="JoyfulReaperLib.MissionControl" Version="0.0.3" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
