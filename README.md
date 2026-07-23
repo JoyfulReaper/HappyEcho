@@ -175,7 +175,7 @@ The two events for one echo session share the same Mission Control correlation I
 Build the image:
 
 ```bash
-docker build --no-cache -t joyful/happyecho:test .
+docker build --no-cache -t happy-echo .
 ```
 
 The Dockerfile:
