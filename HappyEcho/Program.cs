@@ -6,6 +6,7 @@
 
 using HappyEcho;
 using JoyfulReaperLib.MissionControl;
+using JoyfulReaperLib.TcpServer;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -29,7 +30,8 @@ builder.Services.AddMissionControlClient(
     builder.Configuration.GetSection(
         MissionControlClientOptions.SectionName));
 
-builder.Services.AddHostedService<EchoWorker>();
+builder.Services.AddTcpServer<EchoConnectionHandler, HappyEchoOptions>();
+builder.Services.AddHostedService<EchoLifecycleService>();
 
 var host = builder.Build();
 host.Run();
