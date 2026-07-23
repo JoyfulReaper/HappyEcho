@@ -9,7 +9,7 @@ It implements the classic Echo Protocol: every byte received from a client is se
 * Asynchronous TCP connections
 * Configurable address and port
 * Concurrent connection limit
-* Loopback/local-source rejection for loop-attack protection
+* Optional loopback/local-source rejection for loop-attack protection
 * Connection timeout
 * Maximum bytes per connection
 * Pooled network buffers
@@ -62,7 +62,8 @@ HappyEcho reads settings from the `Echo` configuration section.
     "MaxConcurrentConnections": 64,
     "RequestTimeoutSeconds": 15,
     "MaxBytesPerConnection": 1048576,
-    "TelemetryIgnoredRemoteAddress": null
+    "TelemetryIgnoredRemoteAddress": null,
+    "BlockLoopbackConnections": false
   },
   "MissionControl": {
     "Enabled": false,
@@ -73,14 +74,15 @@ HappyEcho reads settings from the `Echo` configuration section.
 }
 ```
 
-| Setting                    |     Default | Description                                                                        |
-| -------------------------- | ----------: | ---------------------------------------------------------------------------------- |
-| `ListenAddress`            | `127.0.0.1` | Address used by the TCP listener. Use `0.0.0.0` to accept remote IPv4 connections. |
-| `Port`                     |         `7` | TCP listening port. Port 7 is the traditional Echo Protocol port.                  |
-| `MaxConcurrentConnections` |        `64` | Maximum number of simultaneous client connections.                                 |
-| `RequestTimeoutSeconds`    |        `15` | Maximum lifetime of one connection.                                                |
-| `MaxBytesPerConnection`    |   `1048576` | Maximum bytes echoed during one connection. The default is 1 MiB.                  |
+| Setting                         |     Default | Description                                                                        |
+| ------------------------------- | ----------: | ---------------------------------------------------------------------------------- |
+| `ListenAddress`                 | `127.0.0.1` | Address used by the TCP listener. Use `0.0.0.0` to accept remote IPv4 connections. |
+| `Port`                          |         `7` | TCP listening port. Port 7 is the traditional Echo Protocol port.                  |
+| `MaxConcurrentConnections`      |        `64` | Maximum number of simultaneous client connections.                                 |
+| `RequestTimeoutSeconds`         |        `15` | Maximum lifetime of one connection.                                                |
+| `MaxBytesPerConnection`         |   `1048576` | Maximum bytes echoed during one connection. The default is 1 MiB.                  |
 | `TelemetryIgnoredRemoteAddress` |     `null` | Optional monitor IP whose Echo sessions are processed normally but excluded from Mission Control lifecycle telemetry. |
+| `BlockLoopbackConnections`      |    `false` | Optional loop-attack protection. When `true`, loopback/local-source connections are rejected before Echo processing and do not publish streaming-started or streaming-stopped telemetry. |
 
 Settings can also be supplied through environment variables:
 
@@ -91,6 +93,7 @@ Echo__MaxConcurrentConnections=64
 Echo__RequestTimeoutSeconds=15
 Echo__MaxBytesPerConnection=1048576
 Echo__TelemetryIgnoredRemoteAddress=172.21.0.1
+Echo__BlockLoopbackConnections=false
 
 MissionControl__Enabled=true
 MissionControl__BaseUrl=http://gateway:8080
@@ -98,7 +101,7 @@ MissionControl__ApiKey=replace-with-a-strong-random-key
 MissionControl__TimeoutMilliseconds=1000
 ```
 
-HappyEcho rejects loopback clients. For a public VPS deployment, bind to `0.0.0.0` or a specific external address and test it from another machine.
+HappyEcho accepts loopback clients by default. Set `BlockLoopbackConnections` to `true` to reject loopback/local-source connections as optional loop-attack protection. When enabled, test the service from another machine or network source.
 
 `TelemetryIgnoredRemoteAddress` suppresses Mission Control telemetry only. The TCP session is still accepted, echoed, timed out, byte-limited, and cleaned up normally. The comparison uses only the normalized remote IP address, not the source port, and IPv4-mapped IPv6 addresses are mapped to IPv4 before comparison. This is intended for Uptime Kuma or another trusted TCP monitor. Docker network gateway addresses vary by host and network, so verify the actual monitor source address before setting it.
 
@@ -172,18 +175,44 @@ The two events for one echo session share the same Mission Control correlation I
 Build the image:
 
 ```bash
-docker build --no-cache -t joyful/happyecho:test .
+docker build --no-cache -t happy-echo .
 ```
 
 The Dockerfile:
 
 * Restores, tests, and publishes in a .NET SDK build stage.
-* Uses the .NET runtime image for the final stage.
+* Publishes a Native AOT executable.
+* Uses the small .NET `runtime-deps` image for the final stage.
+* Does not contain the full managed .NET runtime.
 * Runs as `${APP_UID}`, not root.
-* Exposes TCP port `7`.
+* Listens internally on TCP port `7007`.
+* Can be published externally as canonical Echo TCP port `7` with `7:7007`.
 * Does not embed configuration or secrets.
 
-No Docker health check is defined. HappyEcho intentionally rejects loopback clients, and the .NET runtime image does not include a small reliable TCP probing tool such as `nc`. Compose can still verify the service process state, and listener checks should be performed externally or from the host.
+The Docker image defaults to:
+
+```dockerfile
+ENV Echo__ListenAddress=0.0.0.0
+ENV Echo__Port=7007
+```
+
+Local unprivileged mapping:
+
+```bash
+docker run --rm -p 7007:7007 happy-echo
+```
+
+Canonical public Echo mapping:
+
+```bash
+docker run --rm -p 7:7007 happy-echo
+```
+
+Publishing host port 7 may require host-level privileges on Linux and macOS,
+while the process inside the container remains non-root and needs no added
+Linux capability.
+
+No Docker health check is currently defined. Loopback connections are accepted by default, so an in-container loopback health check would be rejected only when `BlockLoopbackConnections=true`. The current `runtime-deps` image does not include a TCP probing utility such as `nc`. Compose can still verify the service process state, and listener checks should be performed externally or from the host.
 
 ## Linux VPS Deployment With Docker Compose
 
@@ -238,11 +267,12 @@ happyecho:
     DOTNET_ENVIRONMENT: Production
 
     Echo__ListenAddress: 0.0.0.0
-    Echo__Port: 7
+    Echo__Port: 7007
     Echo__MaxConcurrentConnections: 64
     Echo__RequestTimeoutSeconds: 15
     Echo__MaxBytesPerConnection: 1048576
     Echo__TelemetryIgnoredRemoteAddress: "172.21.0.1"
+    Echo__BlockLoopbackConnections: "false"
 
     MissionControl__Enabled: "true"
     MissionControl__BaseUrl: http://gateway:8080
@@ -250,13 +280,10 @@ happyecho:
     MissionControl__TimeoutMilliseconds: 1000
 
   ports:
-    - "7:7/tcp"
+    - "7:7007/tcp"
 
   cap_drop:
     - ALL
-
-  cap_add:
-    - NET_BIND_SERVICE
 
   security_opt:
     - no-new-privileges:true
@@ -388,8 +415,9 @@ WantedBy=multi-user.target
 * New connections are immediately closed when all connection slots are occupied.
 * `RequestTimeoutSeconds` limits the total connection lifetime. It does not reset after each message.
 * `MaxBytesPerConnection` limits the total bytes accepted and echoed by one connection.
-* Port 7 is privileged on Linux. Use `NET_BIND_SERVICE`; do not run HappyEcho as root.
-* Loopback health-check connections do not produce streaming telemetry because they are rejected before streaming begins.
+* Port 7 is privileged on Linux. Publish host port 7 to container port 7007; do not run HappyEcho as root and do not add `NET_BIND_SERVICE` to the container.
+* Loopback connections are accepted by default.
+* When `BlockLoopbackConnections` is enabled, rejected loopback/local-source connections produce no streaming lifecycle telemetry because rejection happens before streaming begins.
 
 ## License
 

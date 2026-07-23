@@ -1,12 +1,14 @@
 ﻿/*
- * Happy Echo Server
+ * Happy Echo Service
  * Copyright (c) 2026 Kyle Givler
  * Licensed under the MIT License.
  */
 
+using JoyfulReaperLib.TcpServer;
+
 namespace HappyEcho;
 
-public sealed class HappyEchoOptions
+public sealed class HappyEchoOptions : ITcpServerOptions
 {
     public const string SectionName = "Echo";
     public string ListenAddress { get; set; } = "127.0.0.1";
@@ -15,5 +17,8 @@ public sealed class HappyEchoOptions
     public int RequestTimeoutSeconds { get; set; } = 15;
     public long MaxBytesPerConnection { get; set; } = 1_048_576;
     public string? TelemetryIgnoredRemoteAddress { get; set; }
-    public bool BlockLoopbackConnections { get; set; } = false;
+    public bool BlockLoopbackConnections { get; set; }
+
+    ConnectionLimitBehavior ITcpServerOptions.ConnectionLimitBehavior =>
+        ConnectionLimitBehavior.Reject;
 }

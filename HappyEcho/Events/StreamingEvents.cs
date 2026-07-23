@@ -1,5 +1,5 @@
 /*
- * Happy Echo Server
+ * Happy Echo Service
  * Copyright (c) 2026 Kyle Givler
  * Licensed under the MIT License.
  */
@@ -17,4 +17,3 @@ public sealed record StreamingStoppedEvent(
     long DurationMilliseconds,
     string Outcome,
     bool Succeeded);
-
