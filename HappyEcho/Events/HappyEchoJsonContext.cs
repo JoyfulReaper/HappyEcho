@@ -1,4 +1,11 @@
-﻿using HappyEcho.Events;
+﻿/*
+ * Happy Echo Service
+ * Copyright (c) 2026 Kyle Givler
+ * Licensed under the MIT License.
+ */
+
+
+using HappyEcho.Events;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 

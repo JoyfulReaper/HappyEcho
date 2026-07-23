@@ -311,6 +311,7 @@ public sealed class EchoConnectionHandler(
             Succeeded: succeeded);
     }
 
+    // Used by tests
     internal static async Task<long> EchoAsync(
         Stream stream,
         int requestTimeoutSeconds,
@@ -337,11 +338,9 @@ public sealed class EchoConnectionHandler(
         EchoSessionState state)
     {
         const int BufferSize = 4096;
-
         byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
         timeout.CancelAfter(TimeSpan.FromSeconds(requestTimeoutSeconds));
 
         try
@@ -349,22 +348,15 @@ public sealed class EchoConnectionHandler(
             while (state.BytesEchoed < maxBytesPerConnection)
             {
                 long remaining = maxBytesPerConnection - state.BytesEchoed;
-
                 int readSize = (int)Math.Min(BufferSize, remaining);
-
-                int bytesRead = await stream.ReadAsync(
-                    buffer.AsMemory(0, readSize),
-                    timeout.Token);
+                int bytesRead = await stream.ReadAsync(buffer.AsMemory(0, readSize), timeout.Token);
 
                 if (bytesRead == 0)
                 {
                     break;
                 }
 
-                await stream.WriteAsync(
-                    buffer.AsMemory(0, bytesRead),
-                    timeout.Token);
-
+                await stream.WriteAsync(buffer.AsMemory(0, bytesRead), timeout.Token);
                 await stream.FlushAsync(timeout.Token);
 
                 state.BytesEchoed += bytesRead;
