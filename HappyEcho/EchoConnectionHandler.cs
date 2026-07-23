@@ -357,8 +357,6 @@ public sealed class EchoConnectionHandler(
                 }
 
                 await stream.WriteAsync(buffer.AsMemory(0, bytesRead), timeout.Token);
-                await stream.FlushAsync(timeout.Token);
-
                 state.BytesEchoed += bytesRead;
             }
 
