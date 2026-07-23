@@ -1,5 +1,5 @@
 /*
- * Happy Echo Server
+ * Happy Echo Service
  * Copyright (c) 2026 Kyle Givler
  * Licensed under the MIT License.
  */
@@ -8,9 +8,7 @@ using HappyEcho.Events;
 using JoyfulReaperLib.JRNet;
 using JoyfulReaperLib.MissionControl;
 using Microsoft.Extensions.Options;
-using System.Buffers;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -151,12 +149,32 @@ public class EchoWorker(
                 {
                     logger.LogDebug("Received request: request from {Remote}.", client.Client.RemoteEndPoint);
                     await using NetworkStream stream = client.GetStream();
-                    telemetry = await ProcessEchoProtocolAsync(
-                        stream,
-                        remote,
-                        isIgnoredTelemetrySource,
-                        correlationId,
-                        stoppingToken);
+                    if (isIgnoredTelemetrySource)
+                    {
+                        logger.LogDebug(
+                            "Skipping telemetry for monitoring connection from {Remote}.",
+                            remote);
+                    }
+
+                    EchoProtocolResult result =
+                        await EchoConnectionHandler.ProcessAsync(
+                            stream,
+                            remote,
+                            options.Value,
+                            logger,
+                            stoppingToken);
+
+                    if (!isIgnoredTelemetrySource)
+                    {
+                        telemetry = new EchoSessionTelemetryResult(
+                            Remote: remote?.ToString() ?? "unknown",
+                            BytesEchoed: result.BytesEchoed,
+                            DurationMilliseconds: result.DurationMilliseconds,
+                            Outcome: result.Outcome,
+                            Succeeded: result.Succeeded,
+                            OccurredAt: DateTimeOffset.UtcNow,
+                            CorrelationId: correlationId);
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -233,21 +251,41 @@ public class EchoWorker(
                 DateTimeOffset.UtcNow,
                 correlationId,
                 stoppingToken);
-        EchoSessionTelemetryResult? telemetry;
+
+        if (isIgnoredTelemetrySource)
+        {
+            logger.LogDebug(
+                "Skipping telemetry for monitoring connection from {Remote}.",
+                remote);
+        }
+
+        EchoProtocolResult result;
 
         try
         {
-            telemetry = await ProcessEchoProtocolAsync(
+            result = await EchoConnectionHandler.ProcessAsync(
                 stream,
                 remote,
-                isIgnoredTelemetrySource,
-                correlationId,
+                options.Value,
+                logger,
                 stoppingToken);
         }
         finally
         {
             await stream.DisposeAsync();
         }
+
+        EchoSessionTelemetryResult? telemetry =
+            isIgnoredTelemetrySource
+                ? null
+                : new EchoSessionTelemetryResult(
+                    Remote: remote?.ToString() ?? "unknown",
+                    BytesEchoed: result.BytesEchoed,
+                    DurationMilliseconds: result.DurationMilliseconds,
+                    Outcome: result.Outcome,
+                    Succeeded: result.Succeeded,
+                    OccurredAt: DateTimeOffset.UtcNow,
+                    CorrelationId: correlationId);
 
         if (startedTelemetryTask is not null)
         {
@@ -262,100 +300,6 @@ public class EchoWorker(
                 telemetry,
                 stoppingToken);
         }
-    }
-
-    private async Task<EchoSessionTelemetryResult?> ProcessEchoProtocolAsync(
-        Stream stream,
-        EndPoint? remote,
-        bool isIgnoredTelemetrySource,
-        string correlationId,
-        CancellationToken stoppingToken)
-    {
-        string remoteString = remote?.ToString() ?? "unknown";
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        var state = new EchoSessionState();
-
-        if (isIgnoredTelemetrySource)
-        {
-            logger.LogDebug(
-                "Skipping telemetry for monitoring connection from {Remote}.",
-                remote);
-        }
-
-        string outcome = "failed";
-        bool succeeded = false;
-
-        try
-        {
-            await EchoAsync(
-                stream,
-                options.Value.RequestTimeoutSeconds,
-                options.Value.MaxBytesPerConnection,
-                stoppingToken,
-                state);
-
-            outcome = state.ByteLimitReached
-                ? "byte-limit-reached"
-                : "client-disconnected";
-            succeeded = true;
-        }
-        catch (OperationCanceledException)
-        when (stoppingToken.IsCancellationRequested)
-        {
-            outcome = "server-shutdown";
-            logger.LogDebug(
-                "Echo session from {Remote} was cancelled during shutdown.",
-                remote);
-        }
-        catch (OperationCanceledException)
-        {
-            outcome = "timeout";
-            logger.LogDebug(
-                "Echo session from {Remote} timed out.",
-                remote);
-        }
-        catch (IOException exception)
-        {
-            outcome = "io-error";
-            logger.LogDebug(
-                exception,
-                "Echo session from {Remote} ended early.",
-                remote);
-        }
-        catch (SocketException exception)
-        {
-            outcome = "socket-error";
-            logger.LogDebug(
-                exception,
-                "Socket error during echo session from {Remote}.",
-                remote);
-        }
-        catch (Exception exception)
-        {
-            outcome = "failed";
-            logger.LogError(
-                exception,
-                "Unhandled error during echo session from {Remote}.",
-                remote);
-        }
-        finally
-        {
-            stopwatch.Stop();
-        }
-
-        if (isIgnoredTelemetrySource)
-        {
-            return null;
-        }
-
-        return new EchoSessionTelemetryResult(
-            remoteString,
-            state.BytesEchoed,
-            stopwatch.ElapsedMilliseconds,
-            outcome,
-            succeeded,
-            DateTimeOffset.UtcNow,
-            correlationId);
     }
 
     private bool IsIgnoredTelemetrySource(
@@ -522,69 +466,29 @@ public class EchoWorker(
         }
     }
 
-    public static async Task<long> EchoAsync(
+    public static Task<long> EchoAsync(
         Stream stream,
         int RequestTimeoutSeconds,
         long maxBytesPerConnection,
-        CancellationToken stoppingToken)
-    {
-        var state = new EchoSessionState();
+        CancellationToken stoppingToken) =>
+        EchoConnectionHandler.EchoAsync(
+            stream,
+            RequestTimeoutSeconds,
+            maxBytesPerConnection,
+            stoppingToken);
 
-        await EchoAsync(
+    internal static Task EchoAsync(
+        Stream stream,
+        int RequestTimeoutSeconds,
+        long maxBytesPerConnection,
+        CancellationToken stoppingToken,
+        EchoSessionState state) =>
+        EchoConnectionHandler.EchoAsync(
             stream,
             RequestTimeoutSeconds,
             maxBytesPerConnection,
             stoppingToken,
             state);
-
-        return state.BytesEchoed;
-    }
-
-    internal static async Task EchoAsync(
-        Stream stream,
-        int RequestTimeoutSeconds,
-        long maxBytesPerConnection,
-        CancellationToken stoppingToken,
-        EchoSessionState state)
-    {
-        const int BUFFER_SIZE = 4096;
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_SIZE);
-
-        // We dont want to keep echoing data forever so we set a timeout
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(RequestTimeoutSeconds));
-
-        try
-        {
-            while (state.BytesEchoed < maxBytesPerConnection)
-            {
-                long remaining = maxBytesPerConnection - state.BytesEchoed;
-
-                int readSize = (int)Math.Min(BUFFER_SIZE, remaining);
-
-                int bytesRead = await stream.ReadAsync(
-                    buffer.AsMemory(0, readSize),
-                    timeout.Token);
-
-                if (bytesRead == 0)
-                {
-                    // Client disconnected
-                    break;
-                }
-
-                await stream.WriteAsync(buffer.AsMemory(0, bytesRead), timeout.Token);
-                await stream.FlushAsync(timeout.Token);
-
-                state.BytesEchoed += bytesRead;
-            }
-
-            state.ByteLimitReached = state.BytesEchoed >= maxBytesPerConnection;
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
 
     public override Task StopAsync(CancellationToken cancellationToken)
     {
