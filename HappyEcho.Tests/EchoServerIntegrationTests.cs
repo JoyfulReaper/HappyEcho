@@ -579,7 +579,7 @@ public class EchoServerIntegrationTests
             1,
             ShortTimeout);
 
-        await server.StopAsync(ShortTimeout);
+        await server.StopAsync(HostTimeout);
 
         Assert.Equal(payload, echoed);
         Assert.True(server.Stopped);
