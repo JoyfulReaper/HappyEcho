@@ -15,5 +15,9 @@ namespace HappyEcho;
 [JsonSerializable(typeof(StreamingStartedEvent))]
 [JsonSerializable(typeof(StreamingStoppedEvent))]
 [JsonSerializable(typeof(EchoServiceStartedEvent))]
+[JsonSerializable(typeof(UdpEchoStartedEvent))]
+[JsonSerializable(typeof(UdpEchoStoppedEvent))]
+[JsonSerializable(typeof(UdpDatagramEchoedEvent))]
+[JsonSerializable(typeof(UdpDatagramDroppedEvent))]
 internal sealed partial class HappyEchoJsonContext
     : JsonSerializerContext;

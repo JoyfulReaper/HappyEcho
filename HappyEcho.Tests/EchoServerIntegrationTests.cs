@@ -588,7 +588,7 @@ public class EchoServerIntegrationTests
     }
 
     [Fact]
-    public async Task UdpIPv4_EchoesExactDatagram()
+    public async Task UdpIPv4_EchoesExactDatagramAndPublishesTelemetry()
     {
         var missionControl = new IntegrationMissionControlClient();
         await using var server = await EchoHost.StartAsync(
@@ -609,6 +609,46 @@ public class EchoServerIntegrationTests
             payload);
 
         Assert.Equal(payload, echoed);
+
+        await missionControl.WaitForSuccessfulAsync(
+            HappyEchoEventTypes.UdpDatagramEchoed,
+            ShortTimeout);
+
+        RecordedMissionControlEvent startedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpStarted);
+        var started = Assert.IsType<UdpEchoStartedEvent>(startedTelemetry.Payload);
+        Assert.Equal($"127.0.0.1:{server.UdpPort}", started.ListenEndpoint);
+        Assert.Equal(65_507, started.MaxDatagramBytes);
+        Assert.False(started.BlockLoopbackConnections);
+        Assert.Equal(typeof(UdpEchoStartedEvent), startedTelemetry.PayloadTypeInfo.Type);
+
+        RecordedMissionControlEvent echoedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpDatagramEchoed);
+        var datagramEchoed = Assert.IsType<UdpDatagramEchoedEvent>(
+            echoedTelemetry.Payload);
+        Assert.StartsWith("127.0.0.1:", datagramEchoed.Remote);
+        Assert.Equal(payload.Length, datagramEchoed.BytesEchoed);
+        Assert.Equal(
+            typeof(UdpDatagramEchoedEvent),
+            echoedTelemetry.PayloadTypeInfo.Type);
+
+        await server.StopAsync();
+        await missionControl.WaitForSuccessfulAsync(
+            HappyEchoEventTypes.UdpStopped,
+            ShortTimeout);
+
+        RecordedMissionControlEvent stoppedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpStopped);
+        var stopped = Assert.IsType<UdpEchoStoppedEvent>(stoppedTelemetry.Payload);
+        Assert.Equal($"127.0.0.1:{server.UdpPort}", stopped.ListenEndpoint);
+        Assert.Equal(1, stopped.DatagramsReceived);
+        Assert.Equal(1, stopped.DatagramsEchoed);
+        Assert.Equal(0, stopped.DatagramsDropped);
+        Assert.Equal(payload.Length, stopped.BytesEchoed);
+        Assert.True(stopped.DurationMilliseconds >= 0);
     }
 
     [Fact]
@@ -688,6 +728,66 @@ public class EchoServerIntegrationTests
             TimeSpan.FromMilliseconds(500));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
             await udp.ReceiveAsync(receiveTimeout.Token));
+
+        await missionControl.WaitForSuccessfulAsync(
+            HappyEchoEventTypes.UdpDatagramDropped,
+            ShortTimeout);
+
+        RecordedMissionControlEvent droppedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpDatagramDropped);
+        var dropped = Assert.IsType<UdpDatagramDroppedEvent>(
+            droppedTelemetry.Payload);
+        Assert.StartsWith("127.0.0.1:", dropped.Remote);
+        Assert.Equal(payload.Length, dropped.BytesReceived);
+        Assert.Equal("oversized", dropped.Reason);
+        Assert.Equal(
+            typeof(UdpDatagramDroppedEvent),
+            droppedTelemetry.PayloadTypeInfo.Type);
+    }
+
+    [Fact]
+    public async Task UdpTelemetryFailures_DoNotBreakEchoOrShutdown()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        missionControl.ThrowFor(HappyEchoEventTypes.UdpStarted);
+        missionControl.ThrowFor(HappyEchoEventTypes.UdpDatagramDropped);
+        missionControl.ThrowFor(HappyEchoEventTypes.UdpDatagramEchoed);
+        missionControl.ThrowFor(HappyEchoEventTypes.UdpStopped);
+
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0,
+                MaxUdpDatagramBytes = 8
+            });
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Connect(IPAddress.Loopback, server.UdpPort);
+
+        byte[] oversized = new byte[9];
+        await udp.SendAsync(oversized, oversized.Length).WaitAsync(ShortTimeout);
+
+        byte[] firstPayload = [1, 2, 3];
+        await udp.SendAsync(firstPayload, firstPayload.Length).WaitAsync(ShortTimeout);
+        UdpReceiveResult firstEcho = await udp.ReceiveAsync().WaitAsync(ShortTimeout);
+        Assert.Equal(firstPayload, firstEcho.Buffer);
+
+        byte[] secondPayload = [4, 5, 6];
+        await udp.SendAsync(secondPayload, secondPayload.Length).WaitAsync(ShortTimeout);
+        UdpReceiveResult secondEcho = await udp.ReceiveAsync().WaitAsync(ShortTimeout);
+        Assert.Equal(secondPayload, secondEcho.Buffer);
+
+        await server.StopAsync();
+        Assert.True(server.Stopped);
+        Assert.Contains(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpStopped);
     }
 
     private static async Task<RecordedMissionControlEvent> WaitForSingleSuccessfulStoppedAsync(
