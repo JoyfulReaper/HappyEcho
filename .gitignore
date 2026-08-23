@@ -196,7 +196,7 @@ publish/
 PublishScripts/
 
 # NuGet Packages
-*.nupkg
+#*.nupkg
 !local-nuget/*.nupkg
 # NuGet Symbol Packages
 *.snupkg
