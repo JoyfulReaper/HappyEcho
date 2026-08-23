@@ -778,6 +778,9 @@ public class EchoServerIntegrationTests
 
         byte[] oversized = new byte[9];
         await udp.SendAsync(oversized, oversized.Length).WaitAsync(ShortTimeout);
+        await AssertNoUdpResponseAsync(
+            udp,
+            TimeSpan.FromMilliseconds(500));
 
         byte[] firstPayload = [1, 2, 3];
         await udp.SendAsync(firstPayload, firstPayload.Length).WaitAsync(ShortTimeout);
