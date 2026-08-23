@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json.Serialization.Metadata;
 
 namespace HappyEcho;
 
@@ -58,10 +59,13 @@ public sealed class UdpEchoService(
                 "HappyEcho UDP listener started on {Endpoint}",
                 udp.Client.LocalEndPoint));
 
-        await PublishStartedAsync(
-            listenEndpoint,
-            maxDatagramBytes,
-            value.BlockLoopbackConnections,
+        await PublishTelemetrySafelyAsync(
+            HappyEchoEventTypes.UdpStarted,
+            new UdpEchoStartedEvent(
+                listenEndpoint,
+                maxDatagramBytes,
+                value.BlockLoopbackConnections),
+            HappyEchoJsonContext.Default.UdpEchoStartedEvent,
             stoppingToken);
 
         try
@@ -103,10 +107,13 @@ public sealed class UdpEchoService(
                         logger.LogWarning(
                             "[SECURITY] Dropped UDP loopback datagram from {Remote}",
                             received.RemoteEndPoint));
-                    await PublishDroppedAsync(
-                        received.RemoteEndPoint.ToString(),
-                        received.Buffer.Length,
-                        "loopback-blocked",
+                    await PublishTelemetrySafelyAsync(
+                        HappyEchoEventTypes.UdpDatagramDropped,
+                        new UdpDatagramDroppedEvent(
+                            received.RemoteEndPoint.ToString(),
+                            received.Buffer.Length,
+                            "loopback-blocked"),
+                        HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
                         stoppingToken);
 
                     continue;
@@ -120,10 +127,13 @@ public sealed class UdpEchoService(
                             "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    await PublishDroppedAsync(
-                        received.RemoteEndPoint.ToString(),
-                        received.Buffer.Length,
-                        "oversized",
+                    await PublishTelemetrySafelyAsync(
+                        HappyEchoEventTypes.UdpDatagramDropped,
+                        new UdpDatagramDroppedEvent(
+                            received.RemoteEndPoint.ToString(),
+                            received.Buffer.Length,
+                            "oversized"),
+                        HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
                         stoppingToken);
 
                     continue;
@@ -143,9 +153,12 @@ public sealed class UdpEchoService(
                             "Echoed UDP datagram for {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    await PublishEchoedAsync(
-                        received.RemoteEndPoint.ToString(),
-                        received.Buffer.Length,
+                    await PublishTelemetrySafelyAsync(
+                        HappyEchoEventTypes.UdpDatagramEchoed,
+                        new UdpDatagramEchoedEvent(
+                            received.RemoteEndPoint.ToString(),
+                            received.Buffer.Length),
+                        HappyEchoJsonContext.Default.UdpDatagramEchoedEvent,
                         stoppingToken);
                 }
                 catch (SocketException exception)
@@ -156,10 +169,13 @@ public sealed class UdpEchoService(
                             exception,
                             "Socket error while sending UDP Echo datagram to {Remote}.",
                             received.RemoteEndPoint));
-                    await PublishDroppedAsync(
-                        received.RemoteEndPoint.ToString(),
-                        received.Buffer.Length,
-                        "send-error",
+                    await PublishTelemetrySafelyAsync(
+                        HappyEchoEventTypes.UdpDatagramDropped,
+                        new UdpDatagramDroppedEvent(
+                            received.RemoteEndPoint.ToString(),
+                            received.Buffer.Length,
+                            "send-error"),
+                        HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
                         stoppingToken);
                 }
             }
@@ -169,180 +185,35 @@ public sealed class UdpEchoService(
             stopwatch.Stop();
             TryLog(() =>
                 logger.LogInformation("HappyEcho UDP listener stopped."));
-            await PublishStoppedAsync(
-                listenEndpoint,
-                datagramsReceived,
-                datagramsEchoed,
-                datagramsDropped,
-                bytesEchoed,
-                stopwatch.ElapsedMilliseconds);
-        }
-    }
-
-    private async Task PublishStartedAsync(
-        string listenEndpoint,
-        int maxDatagramBytes,
-        bool blockLoopbackConnections,
-        CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TelemetryPublishTimeout);
-
-        try
-        {
-            bool published = await missionControlClient.TryPublishAsync(
-                eventType: HappyEchoEventTypes.UdpStarted,
-                payload: new UdpEchoStartedEvent(
-                    listenEndpoint,
-                    maxDatagramBytes,
-                    blockLoopbackConnections),
-                payloadTypeInfo: HappyEchoJsonContext.Default.UdpEchoStartedEvent,
-                occurredAt: DateTimeOffset.UtcNow,
-                cancellationToken: timeout.Token);
-
-            if (!published)
-            {
-                TryLog(() =>
-                    logger.LogWarning(
-                        "Mission Control did not accept {EventType}.",
-                        HappyEchoEventTypes.UdpStarted));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            TryLog(() =>
-                logger.LogDebug(
-                    "UDP-started telemetry publishing stopped during shutdown."));
-        }
-        catch (OperationCanceledException)
-        {
-            TryLog(() =>
-                logger.LogWarning("UDP-started telemetry publishing timed out."));
-        }
-        catch (Exception exception)
-        {
-            TryLog(() =>
-                logger.LogWarning(
-                    exception,
-                    "Failed to publish UDP-started telemetry."));
-        }
-    }
-
-    private async Task PublishEchoedAsync(
-        string remote,
-        int bytesEchoed,
-        CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TelemetryPublishTimeout);
-
-        try
-        {
-            bool published = await missionControlClient.TryPublishAsync(
-                eventType: HappyEchoEventTypes.UdpDatagramEchoed,
-                payload: new UdpDatagramEchoedEvent(remote, bytesEchoed),
-                payloadTypeInfo: HappyEchoJsonContext.Default.UdpDatagramEchoedEvent,
-                occurredAt: DateTimeOffset.UtcNow,
-                cancellationToken: timeout.Token);
-
-            if (!published)
-            {
-                TryLog(() =>
-                    logger.LogWarning(
-                        "Mission Control did not accept {EventType}.",
-                        HappyEchoEventTypes.UdpDatagramEchoed));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            TryLog(() =>
-                logger.LogDebug(
-                    "UDP-datagram-echoed telemetry publishing stopped during shutdown."));
-        }
-        catch (OperationCanceledException)
-        {
-            TryLog(() =>
-                logger.LogWarning(
-                    "UDP-datagram-echoed telemetry publishing timed out."));
-        }
-        catch (Exception exception)
-        {
-            TryLog(() =>
-                logger.LogWarning(
-                    exception,
-                    "Failed to publish UDP-datagram-echoed telemetry."));
-        }
-    }
-
-    private async Task PublishDroppedAsync(
-        string remote,
-        int bytesReceived,
-        string reason,
-        CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TelemetryPublishTimeout);
-
-        try
-        {
-            bool published = await missionControlClient.TryPublishAsync(
-                eventType: HappyEchoEventTypes.UdpDatagramDropped,
-                payload: new UdpDatagramDroppedEvent(remote, bytesReceived, reason),
-                payloadTypeInfo: HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
-                occurredAt: DateTimeOffset.UtcNow,
-                cancellationToken: timeout.Token);
-
-            if (!published)
-            {
-                TryLog(() =>
-                    logger.LogWarning(
-                        "Mission Control did not accept {EventType}.",
-                        HappyEchoEventTypes.UdpDatagramDropped));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            TryLog(() =>
-                logger.LogDebug(
-                    "UDP-datagram-dropped telemetry publishing stopped during shutdown."));
-        }
-        catch (OperationCanceledException)
-        {
-            TryLog(() =>
-                logger.LogWarning(
-                    "UDP-datagram-dropped telemetry publishing timed out."));
-        }
-        catch (Exception exception)
-        {
-            TryLog(() =>
-                logger.LogWarning(
-                    exception,
-                    "Failed to publish UDP-datagram-dropped telemetry."));
-        }
-    }
-
-    private async Task PublishStoppedAsync(
-        string listenEndpoint,
-        long datagramsReceived,
-        long datagramsEchoed,
-        long datagramsDropped,
-        long bytesEchoed,
-        long durationMilliseconds)
-    {
-        using var timeout = new CancellationTokenSource(TelemetryPublishTimeout);
-
-        try
-        {
-            bool published = await missionControlClient.TryPublishAsync(
-                eventType: HappyEchoEventTypes.UdpStopped,
-                payload: new UdpEchoStoppedEvent(
+            await PublishTelemetrySafelyAsync(
+                HappyEchoEventTypes.UdpStopped,
+                new UdpEchoStoppedEvent(
                     listenEndpoint,
                     datagramsReceived,
                     datagramsEchoed,
                     datagramsDropped,
                     bytesEchoed,
-                    durationMilliseconds),
-                payloadTypeInfo: HappyEchoJsonContext.Default.UdpEchoStoppedEvent,
+                    stopwatch.ElapsedMilliseconds),
+                HappyEchoJsonContext.Default.UdpEchoStoppedEvent,
+                CancellationToken.None);
+        }
+    }
+
+    private async Task PublishTelemetrySafelyAsync<TPayload>(
+        string eventType,
+        TPayload payload,
+        JsonTypeInfo<TPayload> payloadTypeInfo,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TelemetryPublishTimeout);
+
+        try
+        {
+            bool published = await missionControlClient.TryPublishAsync(
+                eventType: eventType,
+                payload: payload,
+                payloadTypeInfo: payloadTypeInfo,
                 occurredAt: DateTimeOffset.UtcNow,
                 cancellationToken: timeout.Token);
 
@@ -351,20 +222,30 @@ public sealed class UdpEchoService(
                 TryLog(() =>
                     logger.LogWarning(
                         "Mission Control did not accept {EventType}.",
-                        HappyEchoEventTypes.UdpStopped));
+                        eventType));
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            TryLog(() =>
+                logger.LogDebug(
+                    "Telemetry publishing for {EventType} stopped during shutdown.",
+                    eventType));
         }
         catch (OperationCanceledException)
         {
             TryLog(() =>
-                logger.LogWarning("UDP-stopped telemetry publishing timed out."));
+                logger.LogWarning(
+                    "Telemetry publishing for {EventType} timed out.",
+                    eventType));
         }
         catch (Exception exception)
         {
             TryLog(() =>
                 logger.LogWarning(
                     exception,
-                    "Failed to publish UDP-stopped telemetry."));
+                    "Failed to publish Mission Control event {EventType}.",
+                    eventType));
         }
     }
 
