@@ -16,4 +16,16 @@ public static class HappyEchoEventTypes
 
     public const string ServiceStarted =
         "happyecho.service.started";
+
+    public const string UdpStarted =
+        "happyecho.udp.started";
+
+    public const string UdpStopped =
+        "happyecho.udp.stopped";
+
+    public const string UdpDatagramEchoed =
+        "happyecho.udp.datagram.echoed";
+
+    public const string UdpDatagramDropped =
+        "happyecho.udp.datagram.dropped";
 }
