@@ -1061,6 +1061,14 @@ public class EchoServerIntegrationTests
                     1,
                     timeout ?? HostTimeout);
 
+                if (testOptions.UdpEnabled)
+                {
+                    await missionControl.WaitForAttemptCountAsync(
+                        HappyEchoEventTypes.UdpStarted,
+                        1,
+                        timeout ?? HostTimeout);
+                }
+
                 return echoHost;
             }
             catch
