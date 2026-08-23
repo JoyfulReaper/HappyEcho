@@ -587,6 +587,109 @@ public class EchoServerIntegrationTests
         missionControl.ReleaseBlockedPublications(HappyEchoEventTypes.StreamingStopped);
     }
 
+    [Fact]
+    public async Task UdpIPv4_EchoesExactDatagram()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0
+            });
+
+        byte[] payload = [0, 255, 1, 254, 2, 253, 3, 252];
+        byte[] echoed = await UdpEchoRoundTripAsync(
+            IPAddress.Loopback,
+            server.UdpPort,
+            payload);
+
+        Assert.Equal(payload, echoed);
+    }
+
+    [Fact]
+    public async Task UdpIPv6_EchoesExactDatagram()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "::1",
+                UdpPort = 0
+            });
+
+        byte[] payload = [252, 3, 253, 2, 254, 1, 255, 0];
+        byte[] echoed = await UdpEchoRoundTripAsync(
+            IPAddress.IPv6Loopback,
+            server.UdpPort,
+            payload);
+
+        Assert.Equal(payload, echoed);
+    }
+
+    [Fact]
+    public async Task UdpDisabled_DoesNotBindConfiguredPort()
+    {
+        int udpPort = AllocateTemporaryUdpPort(IPAddress.Loopback);
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = false,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = udpPort
+            });
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Client.Bind(new IPEndPoint(IPAddress.Loopback, udpPort));
+
+        Assert.Equal(udpPort, ((IPEndPoint)udp.Client.LocalEndPoint!).Port);
+    }
+
+    [Fact]
+    public async Task OversizedUdpDatagram_IsNotEchoed()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0,
+                MaxUdpDatagramBytes = 8
+            });
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Connect(IPAddress.Loopback, server.UdpPort);
+        byte[] acceptedPayload = new byte[8];
+        await udp.SendAsync(acceptedPayload, acceptedPayload.Length).WaitAsync(
+            ShortTimeout);
+        UdpReceiveResult accepted = await udp.ReceiveAsync().WaitAsync(ShortTimeout);
+        Assert.Equal(acceptedPayload, accepted.Buffer);
+
+        byte[] payload = new byte[9];
+        await udp.SendAsync(payload, payload.Length).WaitAsync(ShortTimeout);
+
+        using var receiveTimeout = new CancellationTokenSource(
+            TimeSpan.FromMilliseconds(500));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await udp.ReceiveAsync(receiveTimeout.Token));
+    }
+
     private static async Task<RecordedMissionControlEvent> WaitForSingleSuccessfulStoppedAsync(
         IntegrationMissionControlClient missionControl)
     {
@@ -609,6 +712,18 @@ public class EchoServerIntegrationTests
         await WriteAllAsync(stream, payload);
         ShutdownSend(client);
         return await ReadUntilEofAsync(stream);
+    }
+
+    private static async Task<byte[]> UdpEchoRoundTripAsync(
+        IPAddress address,
+        int port,
+        byte[] payload)
+    {
+        using var udp = new UdpClient(address.AddressFamily);
+        udp.Connect(address, port);
+        await udp.SendAsync(payload, payload.Length).WaitAsync(ShortTimeout);
+        UdpReceiveResult result = await udp.ReceiveAsync().WaitAsync(ShortTimeout);
+        return result.Buffer;
     }
 
     private static async Task<TcpClient> ConnectAsync(
@@ -731,18 +846,27 @@ public class EchoServerIntegrationTests
         return port;
     }
 
+    private static int AllocateTemporaryUdpPort(IPAddress address)
+    {
+        using var udp = new UdpClient(address.AddressFamily);
+        udp.Client.Bind(new IPEndPoint(address, 0));
+        return ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+    }
+
     private sealed class EchoHost : IAsyncDisposable
     {
         private readonly IHost _host;
         private int _stopped;
 
-        private EchoHost(IHost host, int port)
+        private EchoHost(IHost host, int port, int udpPort)
         {
             _host = host;
             Port = port;
+            UdpPort = udpPort;
         }
 
         public int Port { get; }
+        public int UdpPort { get; }
         public bool Stopped => Volatile.Read(ref _stopped) == 1;
 
         public static async Task<EchoHost> StartAsync(
@@ -758,6 +882,16 @@ public class EchoServerIntegrationTests
             int port = testOptions.Port == 0
                 ? AllocateTemporaryLoopbackPort()
                 : testOptions.Port;
+            int udpPort = testOptions.UdpPort ?? port;
+            if (testOptions.UdpEnabled && udpPort == 0)
+            {
+                string udpListenAddress = string.IsNullOrWhiteSpace(
+                    testOptions.UdpListenAddress)
+                    ? testOptions.ListenAddress
+                    : testOptions.UdpListenAddress;
+                udpPort = AllocateTemporaryUdpPort(
+                    IPAddress.Parse(udpListenAddress));
+            }
 
             HostApplicationBuilder builder = Host.CreateApplicationBuilder();
             builder.Logging.ClearProviders();
@@ -766,19 +900,25 @@ public class EchoServerIntegrationTests
             builder.Services.Configure<HappyEchoOptions>(configured =>
             {
                 configured.ListenAddress = testOptions.ListenAddress;
+                configured.DualMode = testOptions.DualMode;
                 configured.Port = port;
                 configured.MaxConcurrentConnections = testOptions.MaxConcurrentConnections;
                 configured.RequestTimeoutSeconds = testOptions.RequestTimeoutSeconds;
                 configured.MaxBytesPerConnection = testOptions.MaxBytesPerConnection;
                 configured.TelemetryIgnoredRemoteAddress = testOptions.TelemetryIgnoredRemoteAddress;
                 configured.BlockLoopbackConnections = testOptions.BlockLoopbackConnections;
+                configured.UdpEnabled = testOptions.UdpEnabled;
+                configured.UdpListenAddress = testOptions.UdpListenAddress;
+                configured.UdpPort = udpPort;
+                configured.MaxUdpDatagramBytes = testOptions.MaxUdpDatagramBytes;
             });
 
             builder.Services.AddTcpServer<EchoConnectionHandler, HappyEchoOptions>();
+            builder.Services.AddHostedService<UdpEchoService>();
             builder.Services.AddHostedService<EchoLifecycleService>();
 
             IHost host = builder.Build();
-            var echoHost = new EchoHost(host, port);
+            var echoHost = new EchoHost(host, port, udpPort);
 
             try
             {
