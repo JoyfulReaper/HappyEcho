@@ -5,6 +5,7 @@ public sealed class HappyEchoOptions : ITcpServerOptions
     public const string SectionName = "Echo";
 
     public string ListenAddress { get; set; } = "127.0.0.1";
+    public bool DualMode { get; set; }
     public int Port { get; set; } = 7;
     public int MaxConcurrentConnections { get; set; } = 64;
     public int RequestTimeoutSeconds { get; set; } = 15;
