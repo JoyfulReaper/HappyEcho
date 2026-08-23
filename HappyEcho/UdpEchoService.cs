@@ -29,7 +29,8 @@ public sealed class UdpEchoService(
 
         if (!value.UdpEnabled)
         {
-            logger.LogInformation("HappyEcho UDP listener disabled.");
+            TryLog(() =>
+                logger.LogInformation("HappyEcho UDP listener disabled."));
             return;
         }
 
@@ -52,9 +53,10 @@ public sealed class UdpEchoService(
         long datagramsDropped = 0;
         long bytesEchoed = 0;
 
-        logger.LogInformation(
-            "HappyEcho UDP listener started on {Endpoint}",
-            udp.Client.LocalEndPoint);
+        TryLog(() =>
+            logger.LogInformation(
+                "HappyEcho UDP listener started on {Endpoint}",
+                udp.Client.LocalEndPoint));
 
         await PublishStartedAsync(
             listenEndpoint,
@@ -79,9 +81,10 @@ public sealed class UdpEchoService(
                 }
                 catch (SocketException exception)
                 {
-                    logger.LogWarning(
-                        exception,
-                        "Socket error while receiving UDP Echo datagram.");
+                    TryLog(() =>
+                        logger.LogWarning(
+                            exception,
+                            "Socket error while receiving UDP Echo datagram."));
 
                     continue;
                 }
@@ -96,9 +99,10 @@ public sealed class UdpEchoService(
                 if (ShouldBlockDatagram(received.RemoteEndPoint, listenAddress, value))
                 {
                     datagramsDropped++;
-                    logger.LogWarning(
-                        "[SECURITY] Dropped UDP loopback datagram from {Remote}",
-                        received.RemoteEndPoint);
+                    TryLog(() =>
+                        logger.LogWarning(
+                            "[SECURITY] Dropped UDP loopback datagram from {Remote}",
+                            received.RemoteEndPoint));
                     await PublishDroppedAsync(
                         received.RemoteEndPoint.ToString(),
                         received.Buffer.Length,
@@ -111,10 +115,11 @@ public sealed class UdpEchoService(
                 if (received.Buffer.Length > maxDatagramBytes)
                 {
                     datagramsDropped++;
-                    logger.LogWarning(
-                        "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
-                        received.RemoteEndPoint,
-                        received.Buffer.Length);
+                    TryLog(() =>
+                        logger.LogWarning(
+                            "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
+                            received.RemoteEndPoint,
+                            received.Buffer.Length));
                     await PublishDroppedAsync(
                         received.RemoteEndPoint.ToString(),
                         received.Buffer.Length,
@@ -133,10 +138,11 @@ public sealed class UdpEchoService(
 
                     datagramsEchoed++;
                     bytesEchoed += received.Buffer.Length;
-                    logger.LogDebug(
-                        "Echoed UDP datagram for {Remote}: {Bytes} bytes.",
-                        received.RemoteEndPoint,
-                        received.Buffer.Length);
+                    TryLog(() =>
+                        logger.LogDebug(
+                            "Echoed UDP datagram for {Remote}: {Bytes} bytes.",
+                            received.RemoteEndPoint,
+                            received.Buffer.Length));
                     await PublishEchoedAsync(
                         received.RemoteEndPoint.ToString(),
                         received.Buffer.Length,
@@ -145,10 +151,11 @@ public sealed class UdpEchoService(
                 catch (SocketException exception)
                 {
                     datagramsDropped++;
-                    logger.LogWarning(
-                        exception,
-                        "Socket error while sending UDP Echo datagram to {Remote}.",
-                        received.RemoteEndPoint);
+                    TryLog(() =>
+                        logger.LogWarning(
+                            exception,
+                            "Socket error while sending UDP Echo datagram to {Remote}.",
+                            received.RemoteEndPoint));
                     await PublishDroppedAsync(
                         received.RemoteEndPoint.ToString(),
                         received.Buffer.Length,
@@ -160,7 +167,8 @@ public sealed class UdpEchoService(
         finally
         {
             stopwatch.Stop();
-            logger.LogInformation("HappyEcho UDP listener stopped.");
+            TryLog(() =>
+                logger.LogInformation("HappyEcho UDP listener stopped."));
             await PublishStoppedAsync(
                 listenEndpoint,
                 datagramsReceived,
@@ -194,20 +202,29 @@ public sealed class UdpEchoService(
 
             if (!published)
             {
-                logger.LogWarning("Mission Control did not accept {EventType}.", HappyEchoEventTypes.UdpStarted);
+                TryLog(() =>
+                    logger.LogWarning(
+                        "Mission Control did not accept {EventType}.",
+                        HappyEchoEventTypes.UdpStarted));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.LogDebug("UDP-started telemetry publishing stopped during shutdown.");
+            TryLog(() =>
+                logger.LogDebug(
+                    "UDP-started telemetry publishing stopped during shutdown."));
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("UDP-started telemetry publishing timed out.");
+            TryLog(() =>
+                logger.LogWarning("UDP-started telemetry publishing timed out."));
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Failed to publish UDP-started telemetry.");
+            TryLog(() =>
+                logger.LogWarning(
+                    exception,
+                    "Failed to publish UDP-started telemetry."));
         }
     }
 
@@ -230,20 +247,30 @@ public sealed class UdpEchoService(
 
             if (!published)
             {
-                logger.LogWarning("Mission Control did not accept {EventType}.", HappyEchoEventTypes.UdpDatagramEchoed);
+                TryLog(() =>
+                    logger.LogWarning(
+                        "Mission Control did not accept {EventType}.",
+                        HappyEchoEventTypes.UdpDatagramEchoed));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.LogDebug("UDP-datagram-echoed telemetry publishing stopped during shutdown.");
+            TryLog(() =>
+                logger.LogDebug(
+                    "UDP-datagram-echoed telemetry publishing stopped during shutdown."));
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("UDP-datagram-echoed telemetry publishing timed out.");
+            TryLog(() =>
+                logger.LogWarning(
+                    "UDP-datagram-echoed telemetry publishing timed out."));
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Failed to publish UDP-datagram-echoed telemetry.");
+            TryLog(() =>
+                logger.LogWarning(
+                    exception,
+                    "Failed to publish UDP-datagram-echoed telemetry."));
         }
     }
 
@@ -267,20 +294,30 @@ public sealed class UdpEchoService(
 
             if (!published)
             {
-                logger.LogWarning("Mission Control did not accept {EventType}.", HappyEchoEventTypes.UdpDatagramDropped);
+                TryLog(() =>
+                    logger.LogWarning(
+                        "Mission Control did not accept {EventType}.",
+                        HappyEchoEventTypes.UdpDatagramDropped));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.LogDebug("UDP-datagram-dropped telemetry publishing stopped during shutdown.");
+            TryLog(() =>
+                logger.LogDebug(
+                    "UDP-datagram-dropped telemetry publishing stopped during shutdown."));
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("UDP-datagram-dropped telemetry publishing timed out.");
+            TryLog(() =>
+                logger.LogWarning(
+                    "UDP-datagram-dropped telemetry publishing timed out."));
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Failed to publish UDP-datagram-dropped telemetry.");
+            TryLog(() =>
+                logger.LogWarning(
+                    exception,
+                    "Failed to publish UDP-datagram-dropped telemetry."));
         }
     }
 
@@ -311,16 +348,35 @@ public sealed class UdpEchoService(
 
             if (!published)
             {
-                logger.LogWarning("Mission Control did not accept {EventType}.", HappyEchoEventTypes.UdpStopped);
+                TryLog(() =>
+                    logger.LogWarning(
+                        "Mission Control did not accept {EventType}.",
+                        HappyEchoEventTypes.UdpStopped));
             }
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("UDP-stopped telemetry publishing timed out.");
+            TryLog(() =>
+                logger.LogWarning("UDP-stopped telemetry publishing timed out."));
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Failed to publish UDP-stopped telemetry.");
+            TryLog(() =>
+                logger.LogWarning(
+                    exception,
+                    "Failed to publish UDP-stopped telemetry."));
+        }
+    }
+
+    private static void TryLog(Action log)
+    {
+        try
+        {
+            log();
+        }
+        catch
+        {
+            // Logging must never interrupt UDP Echo or its telemetry safeguards.
         }
     }
 

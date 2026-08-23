@@ -724,10 +724,16 @@ public class EchoServerIntegrationTests
         byte[] payload = new byte[9];
         await udp.SendAsync(payload, payload.Length).WaitAsync(ShortTimeout);
 
-        using var receiveTimeout = new CancellationTokenSource(
+        await AssertNoUdpResponseAsync(
+            udp,
             TimeSpan.FromMilliseconds(500));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await udp.ReceiveAsync(receiveTimeout.Token));
+
+        byte[] postDropPayload = [1, 2, 3, 4];
+        await udp.SendAsync(postDropPayload, postDropPayload.Length).WaitAsync(
+            ShortTimeout);
+        UdpReceiveResult postDropEcho = await udp.ReceiveAsync().WaitAsync(
+            ShortTimeout);
+        Assert.Equal(postDropPayload, postDropEcho.Buffer);
 
         await missionControl.WaitForSuccessfulAsync(
             HappyEchoEventTypes.UdpDatagramDropped,
@@ -824,6 +830,30 @@ public class EchoServerIntegrationTests
         await udp.SendAsync(payload, payload.Length).WaitAsync(ShortTimeout);
         UdpReceiveResult result = await udp.ReceiveAsync().WaitAsync(ShortTimeout);
         return result.Buffer;
+    }
+
+    private static async Task AssertNoUdpResponseAsync(
+        UdpClient udp,
+        TimeSpan timeout)
+    {
+        using var receiveTimeout = new CancellationTokenSource(timeout);
+
+        try
+        {
+            UdpReceiveResult unexpected = await udp.ReceiveAsync(
+                receiveTimeout.Token);
+            Assert.Fail(
+                $"Expected no UDP response, but received {unexpected.Buffer.Length} bytes.");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (SocketException exception)
+            when (exception.SocketErrorCode is
+                SocketError.ConnectionReset or
+                SocketError.ConnectionRefused)
+        {
+        }
     }
 
     private static async Task<TcpClient> ConnectAsync(
