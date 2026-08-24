@@ -46,7 +46,10 @@ public sealed class UdpEchoService(
             1,
             MaximumUdpPayloadBytes);
 
-        using UdpClient udp = CreateUdpClient(listenAddress, port);
+        using UdpClient udp = CreateUdpClient(
+            listenAddress,
+            port,
+            value.DualMode);
         string listenEndpoint = udp.Client.LocalEndPoint!.ToString()!;
         Stopwatch stopwatch = Stopwatch.StartNew();
         long datagramsReceived = 0;
@@ -56,8 +59,9 @@ public sealed class UdpEchoService(
 
         TryLog(() =>
             logger.LogInformation(
-                "HappyEcho UDP listener started on {Endpoint}",
-                udp.Client.LocalEndPoint));
+                "HappyEcho UDP listener started on {Endpoint} (dual mode: {DualMode})",
+                udp.Client.LocalEndPoint,
+                value.DualMode));
 
         await PublishTelemetrySafelyAsync(
             HappyEchoEventTypes.UdpStarted,
@@ -261,14 +265,23 @@ public sealed class UdpEchoService(
         }
     }
 
-    private static UdpClient CreateUdpClient(IPAddress address, int port)
+    private static UdpClient CreateUdpClient(
+        IPAddress address,
+        int port,
+        bool dualMode)
     {
+        if (dualMode &&
+            !address.Equals(IPAddress.IPv6Any))
+        {
+            throw new InvalidOperationException(
+                "UDP dual mode requires the UDP listen address to be the IPv6 wildcard address '::'.");
+        }
+
         var udp = new UdpClient(address.AddressFamily);
 
-        if (address.AddressFamily == AddressFamily.InterNetworkV6 &&
-            address.Equals(IPAddress.IPv6Any))
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
-            udp.Client.DualMode = true;
+            udp.Client.DualMode = dualMode;
         }
 
         udp.Client.Bind(new IPEndPoint(address, port));

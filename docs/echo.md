@@ -21,7 +21,7 @@ Conventional port: 7
 - Receives one datagram.
 - Sends the exact datagram payload back to the sender.
 - No session state.
-- Supports IPv4 and IPv6.
+- Supports IPv4, IPv6, and optional dual-stack mode.
 - May be disabled in production.
 
 ## Intentional limits/deviations
