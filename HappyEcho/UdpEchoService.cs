@@ -23,6 +23,46 @@ public sealed class UdpEchoService(
 {
     private const int MaximumUdpPayloadBytes = 65_507;
     private static readonly TimeSpan TelemetryPublishTimeout = TimeSpan.FromSeconds(2);
+    private UdpClient? _udp;
+
+    public override async Task StartAsync(
+        CancellationToken cancellationToken)
+    {
+        HappyEchoOptions value = options.Value;
+
+        if (value.UdpEnabled)
+        {
+            IPAddress listenAddress = IPAddressUtils.ParseListenAddress(
+                string.IsNullOrWhiteSpace(
+                    value.UdpListenAddress)
+                    ? value.ListenAddress
+                    : value.UdpListenAddress);
+
+            int port = value.UdpPort ?? value.Port;
+
+            _udp = CreateUdpClient(
+                listenAddress,
+                port,
+                value.DualMode);
+
+            TryLog(() =>
+                logger.LogInformation(
+                    "HappyEcho UDP socket bound to {Endpoint} (dual mode: {DualMode}).",
+                    _udp.Client.LocalEndPoint,
+                    value.DualMode));
+        }
+
+        try
+        {
+            await base.StartAsync(cancellationToken);
+        }
+        catch
+        {
+            _udp?.Dispose();
+            _udp = null;
+            throw;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -46,7 +86,9 @@ public sealed class UdpEchoService(
             1,
             MaximumUdpPayloadBytes);
 
-        using UdpClient udp = CreateUdpClient(listenAddress, port);
+        UdpClient udp = _udp
+            ?? throw new InvalidOperationException("UDP Echo listener was not initialized.");
+
         string listenEndpoint = udp.Client.LocalEndPoint!.ToString()!;
         Stopwatch stopwatch = Stopwatch.StartNew();
         long datagramsReceived = 0;
@@ -56,10 +98,11 @@ public sealed class UdpEchoService(
 
         TryLog(() =>
             logger.LogInformation(
-                "HappyEcho UDP listener started on {Endpoint}",
-                udp.Client.LocalEndPoint));
+                "HappyEcho UDP listener started on {Endpoint} (dual mode: {DualMode})",
+                udp.Client.LocalEndPoint,
+                value.DualMode));
 
-        await PublishTelemetrySafelyAsync(
+        _ = PublishTelemetrySafelyAsync(
             HappyEchoEventTypes.UdpStarted,
             new UdpEchoStartedEvent(
                 listenEndpoint,
@@ -107,7 +150,7 @@ public sealed class UdpEchoService(
                         logger.LogWarning(
                             "[SECURITY] Dropped UDP loopback datagram from {Remote}",
                             received.RemoteEndPoint));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramDropped,
                         new UdpDatagramDroppedEvent(
                             received.RemoteEndPoint.ToString(),
@@ -127,7 +170,7 @@ public sealed class UdpEchoService(
                             "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramDropped,
                         new UdpDatagramDroppedEvent(
                             received.RemoteEndPoint.ToString(),
@@ -153,7 +196,7 @@ public sealed class UdpEchoService(
                             "Echoed UDP datagram for {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramEchoed,
                         new UdpDatagramEchoedEvent(
                             received.RemoteEndPoint.ToString(),
@@ -169,7 +212,7 @@ public sealed class UdpEchoService(
                             exception,
                             "Socket error while sending UDP Echo datagram to {Remote}.",
                             received.RemoteEndPoint));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramDropped,
                         new UdpDatagramDroppedEvent(
                             received.RemoteEndPoint.ToString(),
@@ -182,6 +225,9 @@ public sealed class UdpEchoService(
         }
         finally
         {
+            udp.Dispose();
+            _udp = null;
+
             stopwatch.Stop();
             TryLog(() =>
                 logger.LogInformation("HappyEcho UDP listener stopped."));
@@ -261,14 +307,23 @@ public sealed class UdpEchoService(
         }
     }
 
-    private static UdpClient CreateUdpClient(IPAddress address, int port)
+    private static UdpClient CreateUdpClient(
+        IPAddress address,
+        int port,
+        bool dualMode)
     {
+        if (dualMode &&
+            !address.Equals(IPAddress.IPv6Any))
+        {
+            throw new InvalidOperationException(
+                "UDP dual mode requires the UDP listen address to be the IPv6 wildcard address '::'.");
+        }
+
         var udp = new UdpClient(address.AddressFamily);
 
-        if (address.AddressFamily == AddressFamily.InterNetworkV6 &&
-            address.Equals(IPAddress.IPv6Any))
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
-            udp.Client.DualMode = true;
+            udp.Client.DualMode = dualMode;
         }
 
         udp.Client.Bind(new IPEndPoint(address, port));

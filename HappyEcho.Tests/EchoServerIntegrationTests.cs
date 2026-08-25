@@ -4,6 +4,8 @@ using JoyfulReaperLib.TcpServer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json.Serialization.Metadata;
@@ -676,6 +678,125 @@ public class EchoServerIntegrationTests
     }
 
     [Fact]
+    public async Task UdpDualMode_EchoesIPv4LoopbackDatagram()
+    {
+        if (!Socket.OSSupportsIPv6)
+        {
+            return;
+        }
+
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "::",
+                DualMode = true,
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "::",
+                UdpPort = 0
+            });
+
+        byte[] payload = "udp-dual-mode-ipv4"u8.ToArray();
+        byte[] echoed = await UdpEchoRoundTripAsync(
+            IPAddress.Loopback,
+            server.UdpPort,
+            payload);
+
+        Assert.Equal(payload, echoed);
+    }
+
+    [Fact]
+    public async Task UdpDualMode_EchoesIPv6LoopbackDatagram()
+    {
+        if (!Socket.OSSupportsIPv6)
+        {
+            return;
+        }
+
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "::",
+                DualMode = true,
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "::",
+                UdpPort = 0
+            });
+
+        byte[] payload = "udp-dual-mode-ipv6"u8.ToArray();
+        byte[] echoed = await UdpEchoRoundTripAsync(
+            IPAddress.IPv6Loopback,
+            server.UdpPort,
+            payload);
+
+        Assert.Equal(payload, echoed);
+    }
+
+    [Fact]
+    public async Task UdpDualMode_WithIPv4ListenAddress_FailsStartup()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        using var service = new UdpEchoService(
+            NullLogger<UdpEchoService>.Instance,
+            missionControl,
+            Options.Create(new HappyEchoOptions
+            {
+                DualMode = true,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0
+            }));
+
+        InvalidOperationException exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.StartAsync(
+                    CancellationToken.None));
+
+        Assert.Equal(
+            "UDP dual mode requires the UDP listen address to be the IPv6 wildcard address '::'.",
+            exception.Message);
+    }
+
+    [Fact]
+    public async Task UdpLoopbackBlocking_DropsDatagram()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0,
+                BlockLoopbackConnections = true
+            });
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Connect(IPAddress.Loopback, server.UdpPort);
+        byte[] payload = "blocked-loopback"u8.ToArray();
+        await udp.SendAsync(payload, payload.Length).WaitAsync(ShortTimeout);
+
+        await AssertNoUdpResponseAsync(udp, TimeSpan.FromMilliseconds(500));
+        await missionControl.WaitForSuccessfulAsync(
+            HappyEchoEventTypes.UdpDatagramDropped,
+            ShortTimeout);
+
+        RecordedMissionControlEvent droppedTelemetry = Assert.Single(
+            missionControl.SuccessfulPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpDatagramDropped);
+        var dropped = Assert.IsType<UdpDatagramDroppedEvent>(
+            droppedTelemetry.Payload);
+        Assert.Equal("loopback-blocked", dropped.Reason);
+    }
+
+    [Fact]
     public async Task UdpDisabled_DoesNotBindConfiguredPort()
     {
         int udpPort = AllocateTemporaryUdpPort(IPAddress.Loopback);
@@ -1061,20 +1182,106 @@ public class EchoServerIntegrationTests
                     1,
                     timeout ?? HostTimeout);
 
-                if (testOptions.UdpEnabled)
-                {
-                    await missionControl.WaitForAttemptCountAsync(
-                        HappyEchoEventTypes.UdpStarted,
-                        1,
-                        timeout ?? HostTimeout);
-                }
-
                 return echoHost;
             }
             catch
             {
                 await echoHost.DisposeAsync();
                 throw;
+            }
+        }
+
+        [Fact]
+        public async Task UdpBlockedDatagramTelemetry_DoesNotDelayNextEcho()
+        {
+            var missionControl = new IntegrationMissionControlClient();
+            missionControl.Block(
+                HappyEchoEventTypes.UdpDatagramEchoed);
+
+            await using var server = await EchoHost.StartAsync(
+                missionControl,
+                new HappyEchoOptions
+                {
+                    ListenAddress = "127.0.0.1",
+                    Port = 0,
+                    UdpEnabled = true,
+                    UdpListenAddress = "127.0.0.1",
+                    UdpPort = 0
+                });
+
+            try
+            {
+                byte[] firstPayload = "one"u8.ToArray();
+
+                byte[] firstEcho = await UdpEchoRoundTripAsync(
+                    IPAddress.Loopback,
+                    server.UdpPort,
+                    firstPayload);
+
+                Assert.Equal(firstPayload, firstEcho);
+
+                await missionControl.WaitForAttemptCountAsync(
+                    HappyEchoEventTypes.UdpDatagramEchoed,
+                    1,
+                    ShortTimeout);
+
+                byte[] secondPayload = "two"u8.ToArray();
+
+                byte[] secondEcho = await UdpEchoRoundTripAsync(
+                    IPAddress.Loopback,
+                    server.UdpPort,
+                    secondPayload);
+
+                Assert.Equal(secondPayload, secondEcho);
+
+                await missionControl.WaitForAttemptCountAsync(
+                    HappyEchoEventTypes.UdpDatagramEchoed,
+                    2,
+                    ShortTimeout);
+            }
+            finally
+            {
+                missionControl.ReleaseBlockedPublications(
+                    HappyEchoEventTypes.UdpDatagramEchoed);
+            }
+        }
+
+        [Fact]
+        public async Task UdpBlockedStartedTelemetry_DoesNotDelayEchoTraffic()
+        {
+            var missionControl = new IntegrationMissionControlClient();
+            missionControl.Block(HappyEchoEventTypes.UdpStarted);
+
+            await using var server = await EchoHost.StartAsync(
+                missionControl,
+                new HappyEchoOptions
+                {
+                    ListenAddress = "127.0.0.1",
+                    Port = 0,
+                    UdpEnabled = true,
+                    UdpListenAddress = "127.0.0.1",
+                    UdpPort = 0
+                });
+
+            try
+            {
+                byte[] payload = "udp-startup-not-blocked"u8.ToArray();
+
+                byte[] echoed = await UdpEchoRoundTripAsync(
+                    IPAddress.Loopback,
+                    server.UdpPort,
+                    payload);
+
+                Assert.Equal(payload, echoed);
+
+                await missionControl.WaitForAttemptAsync(
+                    HappyEchoEventTypes.UdpStarted,
+                    ShortTimeout);
+            }
+            finally
+            {
+                missionControl.ReleaseBlockedPublications(
+                    HappyEchoEventTypes.UdpStarted);
             }
         }
 

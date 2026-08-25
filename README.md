@@ -7,7 +7,7 @@ It implements the classic Echo Protocol: every byte received from a client is se
 ## Features
 
 * Asynchronous TCP connections and UDP datagrams
-* IPv4, IPv6, and TCP dual-stack listening
+* IPv4, IPv6, and TCP/UDP dual-stack listening
 * Configurable address and port
 * Concurrent connection limit
 * Optional loopback/local-source rejection for loop-attack protection
@@ -229,7 +229,7 @@ HappyEcho reads settings from the `Echo` configuration section.
 | Setting                         |     Default | Description                                                                        |
 | ------------------------------- | ----------: | ---------------------------------------------------------------------------------- |
 | `ListenAddress`                 |        `::` | Address used by the TCP listener. Use `127.0.0.1` or `::1` for loopback-only testing. |
-| `DualMode`                      |      `true` | Allows an IPv6 TCP listener to accept IPv4 clients too. Applies when `ListenAddress` is IPv6. |
+| `DualMode`                      |      `true` | Allows IPv6 TCP and UDP listeners to accept IPv4 clients too. Dual mode requires the applicable listen address to be `::`. |
 | `Port`                          |         `7` | TCP listening port. Port 7 is the traditional Echo Protocol port.                  |
 | `MaxConcurrentConnections`      |        `64` | Maximum number of simultaneous client connections.                                 |
 | `RequestTimeoutSeconds`         |        `15` | Maximum lifetime of one connection.                                                |
@@ -429,6 +429,7 @@ happyecho:
     DOTNET_ENVIRONMENT: Production
 
     Echo__ListenAddress: 0.0.0.0
+    Echo__DualMode: "false"
     Echo__Port: 7007
     Echo__MaxConcurrentConnections: 64
     Echo__RequestTimeoutSeconds: 15
