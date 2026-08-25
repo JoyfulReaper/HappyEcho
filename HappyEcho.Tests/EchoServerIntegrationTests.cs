@@ -18,6 +18,49 @@ public class EchoServerIntegrationTests
     private static readonly TimeSpan HostTimeout = TimeSpan.FromSeconds(5);
 
     [Fact]
+    public async Task UdpImmediateStop_ReleasesPort()
+    {
+        int udpPort =
+            AllocateTemporaryUdpPort(IPAddress.Loopback);
+
+        var missionControl =
+            new IntegrationMissionControlClient();
+
+        using var service =
+            new UdpEchoService(
+                NullLogger<UdpEchoService>.Instance,
+                missionControl,
+                Options.Create(
+                    new HappyEchoOptions
+                    {
+                        ListenAddress = "127.0.0.1",
+                        Port = 0,
+                        UdpEnabled = true,
+                        UdpListenAddress = "127.0.0.1",
+                        UdpPort = udpPort
+                    }));
+
+        await service.StartAsync(
+            CancellationToken.None);
+
+        await service.StopAsync(
+            CancellationToken.None);
+
+        using var udp =
+            new UdpClient(
+                AddressFamily.InterNetwork);
+
+        udp.Client.Bind(
+            new IPEndPoint(
+                IPAddress.Loopback,
+                udpPort));
+
+        Assert.Equal(
+            udpPort,
+            ((IPEndPoint)udp.Client.LocalEndPoint!).Port);
+    }
+
+    [Fact]
     public async Task RealEchoRoundTrip_EchoesExactBytesAndPublishesTelemetry()
     {
         var missionControl = new IntegrationMissionControlClient();
