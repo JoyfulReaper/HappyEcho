@@ -64,6 +64,20 @@ public sealed class UdpEchoService(
         }
     }
 
+    public override async Task StopAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await base.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            _udp?.Dispose();
+            _udp = null;
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         HappyEchoOptions value = options.Value;
