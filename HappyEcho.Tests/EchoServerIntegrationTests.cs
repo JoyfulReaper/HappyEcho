@@ -752,10 +752,10 @@ public class EchoServerIntegrationTests
                 UdpPort = 0
             }));
 
-        await service.StartAsync(CancellationToken.None);
         InvalidOperationException exception =
             await Assert.ThrowsAsync<InvalidOperationException>(
-                () => service.ExecuteTask!);
+                () => service.StartAsync(
+                    CancellationToken.None));
 
         Assert.Equal(
             "UDP dual mode requires the UDP listen address to be the IPv6 wildcard address '::'.",
@@ -1181,14 +1181,6 @@ public class EchoServerIntegrationTests
                     HappyEchoEventTypes.ServiceStarted,
                     1,
                     timeout ?? HostTimeout);
-
-                if (testOptions.UdpEnabled)
-                {
-                    await missionControl.WaitForAttemptCountAsync(
-                        HappyEchoEventTypes.UdpStarted,
-                        1,
-                        timeout ?? HostTimeout);
-                }
 
                 return echoHost;
             }

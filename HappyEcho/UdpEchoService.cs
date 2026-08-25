@@ -23,6 +23,46 @@ public sealed class UdpEchoService(
 {
     private const int MaximumUdpPayloadBytes = 65_507;
     private static readonly TimeSpan TelemetryPublishTimeout = TimeSpan.FromSeconds(2);
+    private UdpClient? _udp;
+
+    public override async Task StartAsync(
+        CancellationToken cancellationToken)
+    {
+        HappyEchoOptions value = options.Value;
+
+        if (value.UdpEnabled)
+        {
+            IPAddress listenAddress = IPAddressUtils.ParseListenAddress(
+                string.IsNullOrWhiteSpace(
+                    value.UdpListenAddress)
+                    ? value.ListenAddress
+                    : value.UdpListenAddress);
+
+            int port = value.UdpPort ?? value.Port;
+
+            _udp = CreateUdpClient(
+                listenAddress,
+                port,
+                value.DualMode);
+
+            TryLog(() =>
+                logger.LogInformation(
+                    "HappyEcho UDP socket bound to {Endpoint} (dual mode: {DualMode}).",
+                    _udp.Client.LocalEndPoint,
+                    value.DualMode));
+        }
+
+        try
+        {
+            await base.StartAsync(cancellationToken);
+        }
+        catch
+        {
+            _udp?.Dispose();
+            _udp = null;
+            throw;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -46,10 +86,9 @@ public sealed class UdpEchoService(
             1,
             MaximumUdpPayloadBytes);
 
-        using UdpClient udp = CreateUdpClient(
-            listenAddress,
-            port,
-            value.DualMode);
+        UdpClient udp = _udp
+            ?? throw new InvalidOperationException("UDP Echo listener was not initialized.");
+
         string listenEndpoint = udp.Client.LocalEndPoint!.ToString()!;
         Stopwatch stopwatch = Stopwatch.StartNew();
         long datagramsReceived = 0;
@@ -186,6 +225,9 @@ public sealed class UdpEchoService(
         }
         finally
         {
+            udp.Dispose();
+            _udp = null;
+
             stopwatch.Stop();
             TryLog(() =>
                 logger.LogInformation("HappyEcho UDP listener stopped."));
