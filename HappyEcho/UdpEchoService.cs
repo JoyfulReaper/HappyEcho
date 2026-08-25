@@ -102,7 +102,7 @@ public sealed class UdpEchoService(
                 udp.Client.LocalEndPoint,
                 value.DualMode));
 
-        await PublishTelemetrySafelyAsync(
+        _ = PublishTelemetrySafelyAsync(
             HappyEchoEventTypes.UdpStarted,
             new UdpEchoStartedEvent(
                 listenEndpoint,
@@ -150,7 +150,7 @@ public sealed class UdpEchoService(
                         logger.LogWarning(
                             "[SECURITY] Dropped UDP loopback datagram from {Remote}",
                             received.RemoteEndPoint));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramDropped,
                         new UdpDatagramDroppedEvent(
                             received.RemoteEndPoint.ToString(),
@@ -170,7 +170,7 @@ public sealed class UdpEchoService(
                             "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    await PublishTelemetrySafelyAsync(
+                    _ = PublishTelemetrySafelyAsync(
                         HappyEchoEventTypes.UdpDatagramDropped,
                         new UdpDatagramDroppedEvent(
                             received.RemoteEndPoint.ToString(),
