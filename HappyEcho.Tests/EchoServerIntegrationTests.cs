@@ -472,7 +472,7 @@ public class EchoServerIntegrationTests
             {
                 ListenAddress = "127.0.0.1",
                 Port = 0,
-                TelemetryIgnoredRemoteAddress = "127.0.0.1"
+                TelemetryIgnoredRemoteAddresses = ["127.0.0.1"]
             });
 
         byte[] payload = "monitor"u8.ToArray();
@@ -497,7 +497,7 @@ public class EchoServerIntegrationTests
             {
                 ListenAddress = "127.0.0.1",
                 Port = 0,
-                TelemetryIgnoredRemoteAddress = "172.21.0.1"
+                TelemetryIgnoredRemoteAddresses = ["172.21.0.1"]
             });
 
         byte[] payload = "real"u8.ToArray();
@@ -520,12 +520,8 @@ public class EchoServerIntegrationTests
         Assert.Equal(startedTelemetry.CorrelationId, stoppedTelemetry.CorrelationId);
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task MissingIgnoredAddress_DoesNotSuppressStreamingTelemetry(
-        string? telemetryIgnoredRemoteAddress)
+    [Fact]
+    public async Task EmptyIgnoredAddressList_DoesNotSuppressStreamingTelemetry()
     {
         var missionControl = new IntegrationMissionControlClient();
         await using var server = await EchoHost.StartAsync(
@@ -534,7 +530,7 @@ public class EchoServerIntegrationTests
             {
                 ListenAddress = "127.0.0.1",
                 Port = 0,
-                TelemetryIgnoredRemoteAddress = telemetryIgnoredRemoteAddress
+                TelemetryIgnoredRemoteAddresses = []
             });
 
         byte[] payload = "normal"u8.ToArray();
@@ -694,6 +690,38 @@ public class EchoServerIntegrationTests
         Assert.Equal(0, stopped.DatagramsDropped);
         Assert.Equal(payload.Length, stopped.BytesEchoed);
         Assert.True(stopped.DurationMilliseconds >= 0);
+    }
+
+    [Fact]
+    public async Task UdpMatchingIgnoredAddressAmongMultipleEntries_EchoesWithoutClientTelemetry()
+    {
+        var missionControl = new IntegrationMissionControlClient();
+        await using var server = await EchoHost.StartAsync(
+            missionControl,
+            new HappyEchoOptions
+            {
+                ListenAddress = "127.0.0.1",
+                Port = 0,
+                UdpEnabled = true,
+                UdpListenAddress = "127.0.0.1",
+                UdpPort = 0,
+                TelemetryIgnoredRemoteAddresses =
+                    ["invalid-address", "127.0.0.1", "192.0.2.10"]
+            });
+
+        byte[] payload = "ignored-udp-monitor"u8.ToArray();
+        byte[] echoed = await UdpEchoRoundTripAsync(
+            IPAddress.Loopback,
+            server.UdpPort,
+            payload);
+
+        Assert.Equal(payload, echoed);
+        Assert.DoesNotContain(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpDatagramEchoed);
+        Assert.Contains(
+            missionControl.AttemptedPublications,
+            e => e.EventType == HappyEchoEventTypes.UdpStarted);
     }
 
     [Fact]
@@ -1296,7 +1324,8 @@ public class EchoServerIntegrationTests
                 configured.MaxConcurrentConnections = testOptions.MaxConcurrentConnections;
                 configured.RequestTimeoutSeconds = testOptions.RequestTimeoutSeconds;
                 configured.MaxBytesPerConnection = testOptions.MaxBytesPerConnection;
-                configured.TelemetryIgnoredRemoteAddress = testOptions.TelemetryIgnoredRemoteAddress;
+                configured.TelemetryIgnoredRemoteAddresses =
+                    testOptions.TelemetryIgnoredRemoteAddresses;
                 configured.BlockLoopbackConnections = testOptions.BlockLoopbackConnections;
                 configured.UdpEnabled = testOptions.UdpEnabled;
                 configured.UdpListenAddress = testOptions.UdpListenAddress;

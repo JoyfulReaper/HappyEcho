@@ -210,7 +210,7 @@ HappyEcho reads settings from the `Echo` configuration section.
     "MaxConcurrentConnections": 64,
     "RequestTimeoutSeconds": 15,
     "MaxBytesPerConnection": 1048576,
-    "TelemetryIgnoredRemoteAddress": null,
+    "TelemetryIgnoredRemoteAddresses": [],
     "BlockLoopbackConnections": false,
     "UdpEnabled": false,
     "UdpListenAddress": null,
@@ -234,7 +234,7 @@ HappyEcho reads settings from the `Echo` configuration section.
 | `MaxConcurrentConnections`      |        `64` | Maximum number of simultaneous client connections.                                 |
 | `RequestTimeoutSeconds`         |        `15` | Maximum lifetime of one connection.                                                |
 | `MaxBytesPerConnection`         |   `1048576` | Maximum bytes echoed during one connection. The default is 1 MiB.                  |
-| `TelemetryIgnoredRemoteAddress` |     `null` | Optional monitor IP whose Echo sessions are processed normally but excluded from Mission Control lifecycle telemetry. |
+| `TelemetryIgnoredRemoteAddresses` |       `[]` | Monitor IPs whose TCP sessions and UDP datagrams are processed normally but excluded from client-specific Mission Control telemetry. |
 | `BlockLoopbackConnections`      |    `false` | Optional loop-attack protection. When `true`, loopback/local-source connections are rejected before Echo processing and do not publish streaming-started or streaming-stopped telemetry. |
 | `UdpEnabled`                    |    `false` | Enables the UDP Echo listener. It can remain disabled in production.               |
 | `UdpListenAddress`              |     `null` | UDP listen address. When unset, the value of `ListenAddress` is used.               |
@@ -250,7 +250,8 @@ Echo__Port=7
 Echo__MaxConcurrentConnections=64
 Echo__RequestTimeoutSeconds=15
 Echo__MaxBytesPerConnection=1048576
-Echo__TelemetryIgnoredRemoteAddress=172.21.0.1
+Echo__TelemetryIgnoredRemoteAddresses__0=172.21.0.1
+Echo__TelemetryIgnoredRemoteAddresses__1=172.22.0.1
 Echo__BlockLoopbackConnections=false
 Echo__UdpEnabled=false
 Echo__UdpListenAddress=0.0.0.0
@@ -265,7 +266,7 @@ MissionControl__TimeoutMilliseconds=1000
 
 HappyEcho accepts loopback clients by default. Set `BlockLoopbackConnections` to `true` to reject loopback/local-source connections as optional loop-attack protection. When enabled, test the service from another machine or network source.
 
-`TelemetryIgnoredRemoteAddress` suppresses Mission Control telemetry only. The TCP session is still accepted, echoed, timed out, byte-limited, and cleaned up normally. The comparison uses only the normalized remote IP address, not the source port, and IPv4-mapped IPv6 addresses are mapped to IPv4 before comparison. This is intended for Uptime Kuma or another trusted TCP monitor. Docker network gateway addresses vary by host and network, so verify the actual monitor source address before setting it.
+`TelemetryIgnoredRemoteAddresses` suppresses client-specific Mission Control telemetry only. TCP sessions and UDP datagrams from those addresses are still processed normally. The comparison uses only the normalized remote IP address, not the source port. Configured values are parsed as IP addresses, invalid entries are ignored, and IPv4-mapped IPv6 addresses are mapped to IPv4 before comparison. This is intended for Uptime Kuma or other trusted monitors. Docker network gateway addresses vary by host and network, so verify the actual monitor source addresses before setting them.
 
 ## Mission Control Events
 
@@ -434,7 +435,7 @@ happyecho:
     Echo__MaxConcurrentConnections: 64
     Echo__RequestTimeoutSeconds: 15
     Echo__MaxBytesPerConnection: 1048576
-    Echo__TelemetryIgnoredRemoteAddress: "172.21.0.1"
+    Echo__TelemetryIgnoredRemoteAddresses__0: "172.21.0.1"
     Echo__BlockLoopbackConnections: "false"
 
     MissionControl__Enabled: "true"

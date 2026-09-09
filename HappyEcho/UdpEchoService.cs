@@ -176,6 +176,11 @@ public sealed class UdpEchoService(
                     continue;
                 }
 
+                bool isIgnoredTelemetrySource =
+                    EchoConnectionHandler.IsIgnoredTelemetrySource(
+                        received.RemoteEndPoint,
+                        value.TelemetryIgnoredRemoteAddresses);
+
                 if (received.Buffer.Length > maxDatagramBytes)
                 {
                     datagramsDropped++;
@@ -184,14 +189,17 @@ public sealed class UdpEchoService(
                             "Dropped oversized UDP Echo datagram from {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    _ = PublishTelemetrySafelyAsync(
-                        HappyEchoEventTypes.UdpDatagramDropped,
-                        new UdpDatagramDroppedEvent(
-                            received.RemoteEndPoint.ToString(),
-                            received.Buffer.Length,
-                            "oversized"),
-                        HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
-                        stoppingToken);
+                    if (!isIgnoredTelemetrySource)
+                    {
+                        _ = PublishTelemetrySafelyAsync(
+                            HappyEchoEventTypes.UdpDatagramDropped,
+                            new UdpDatagramDroppedEvent(
+                                received.RemoteEndPoint.ToString(),
+                                received.Buffer.Length,
+                                "oversized"),
+                            HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
+                            stoppingToken);
+                    }
 
                     continue;
                 }
@@ -210,13 +218,16 @@ public sealed class UdpEchoService(
                             "Echoed UDP datagram for {Remote}: {Bytes} bytes.",
                             received.RemoteEndPoint,
                             received.Buffer.Length));
-                    _ = PublishTelemetrySafelyAsync(
-                        HappyEchoEventTypes.UdpDatagramEchoed,
-                        new UdpDatagramEchoedEvent(
-                            received.RemoteEndPoint.ToString(),
-                            received.Buffer.Length),
-                        HappyEchoJsonContext.Default.UdpDatagramEchoedEvent,
-                        stoppingToken);
+                    if (!isIgnoredTelemetrySource)
+                    {
+                        _ = PublishTelemetrySafelyAsync(
+                            HappyEchoEventTypes.UdpDatagramEchoed,
+                            new UdpDatagramEchoedEvent(
+                                received.RemoteEndPoint.ToString(),
+                                received.Buffer.Length),
+                            HappyEchoJsonContext.Default.UdpDatagramEchoedEvent,
+                            stoppingToken);
+                    }
                 }
                 catch (SocketException exception)
                 {
@@ -226,14 +237,17 @@ public sealed class UdpEchoService(
                             exception,
                             "Socket error while sending UDP Echo datagram to {Remote}.",
                             received.RemoteEndPoint));
-                    _ = PublishTelemetrySafelyAsync(
-                        HappyEchoEventTypes.UdpDatagramDropped,
-                        new UdpDatagramDroppedEvent(
-                            received.RemoteEndPoint.ToString(),
-                            received.Buffer.Length,
-                            "send-error"),
-                        HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
-                        stoppingToken);
+                    if (!isIgnoredTelemetrySource)
+                    {
+                        _ = PublishTelemetrySafelyAsync(
+                            HappyEchoEventTypes.UdpDatagramDropped,
+                            new UdpDatagramDroppedEvent(
+                                received.RemoteEndPoint.ToString(),
+                                received.Buffer.Length,
+                                "send-error"),
+                            HappyEchoJsonContext.Default.UdpDatagramDroppedEvent,
+                            stoppingToken);
+                    }
                 }
             }
         }

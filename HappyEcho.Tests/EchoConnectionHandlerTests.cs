@@ -205,7 +205,7 @@ public class EchoConnectionHandlerTests
         var recording = new RecordingMissionControlClient();
         EchoConnectionHandler handler = CreateHandler(
             recording,
-            telemetryIgnoredRemoteAddress: "172.21.0.1");
+            telemetryIgnoredRemoteAddresses: ["172.21.0.1"]);
         var stream = new ScriptedStream("monitor"u8.ToArray());
         var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
 
@@ -223,7 +223,7 @@ public class EchoConnectionHandlerTests
         var recording = new RecordingMissionControlClient();
         EchoConnectionHandler handler = CreateHandler(
             recording,
-            telemetryIgnoredRemoteAddress: "172.21.0.1");
+            telemetryIgnoredRemoteAddresses: ["172.21.0.1"]);
         var stream = new ScriptedStream("mapped"u8.ToArray());
         var remote = new IPEndPoint(
             IPAddress.Parse("::ffff:172.21.0.1"),
@@ -244,7 +244,7 @@ public class EchoConnectionHandlerTests
         EchoConnectionHandler handler = CreateHandler(
             recording,
             requestTimeoutSeconds: 0,
-            telemetryIgnoredRemoteAddress: "172.21.0.1");
+            telemetryIgnoredRemoteAddresses: ["172.21.0.1"]);
         var stream = new BlockingReadStream();
         var remote = new IPEndPoint(IPAddress.Parse("172.21.0.1"), 54321);
 
@@ -261,7 +261,7 @@ public class EchoConnectionHandlerTests
         var recording = new RecordingMissionControlClient();
         EchoConnectionHandler handler = CreateHandler(
             recording,
-            telemetryIgnoredRemoteAddress: "172.21.0.1");
+            telemetryIgnoredRemoteAddresses: ["172.21.0.1"]);
         var stream = new ScriptedStream("abc"u8.ToArray(), "def"u8.ToArray())
         {
             ThrowOnWriteNumber = 2,
@@ -275,6 +275,51 @@ public class EchoConnectionHandlerTests
 
         Assert.Equal("abc"u8.ToArray(), stream.WrittenBytes);
         Assert.Empty(recording.PublishedEvents);
+    }
+
+    [Fact]
+    public void IsIgnoredTelemetrySource_EmptyListDoesNotIgnoreClient()
+    {
+        Assert.False(EchoConnectionHandler.IsIgnoredTelemetrySource(Remote, []));
+    }
+
+    [Fact]
+    public void IsIgnoredTelemetrySource_MatchAmongMultipleAddressesIgnoresClient()
+    {
+        Assert.True(EchoConnectionHandler.IsIgnoredTelemetrySource(
+            Remote,
+            ["198.51.100.20", "203.0.113.10", "192.0.2.30"]));
+    }
+
+    [Fact]
+    public void IsIgnoredTelemetrySource_NonMatchingAddressDoesNotIgnoreClient()
+    {
+        Assert.False(EchoConnectionHandler.IsIgnoredTelemetrySource(
+            Remote,
+            ["198.51.100.20"]));
+    }
+
+    [Fact]
+    public void IsIgnoredTelemetrySource_InvalidAddressIsSafelyIgnored()
+    {
+        Assert.False(EchoConnectionHandler.IsIgnoredTelemetrySource(
+            Remote,
+            ["not-an-ip-address"]));
+    }
+
+    [Theory]
+    [InlineData("203.0.113.10")]
+    [InlineData("::ffff:203.0.113.10")]
+    public void IsIgnoredTelemetrySource_NormalizesIpv4AndMappedIpv6(
+        string configuredAddress)
+    {
+        var mappedRemote = new IPEndPoint(
+            IPAddress.Parse("::ffff:203.0.113.10"),
+            54321);
+
+        Assert.True(EchoConnectionHandler.IsIgnoredTelemetrySource(
+            mappedRemote,
+            [configuredAddress]));
     }
 
     private static ValueTask<EchoProtocolResult> ProcessAsync(
@@ -297,7 +342,7 @@ public class EchoConnectionHandlerTests
         IMissionControlClient missionControlClient,
         int requestTimeoutSeconds = 15,
         long maxBytesPerConnection = 1_048_576,
-        string? telemetryIgnoredRemoteAddress = null) =>
+        string[]? telemetryIgnoredRemoteAddresses = null) =>
         new(
             NullLogger<EchoConnectionHandler>.Instance,
             missionControlClient,
@@ -308,7 +353,8 @@ public class EchoConnectionHandlerTests
                 MaxConcurrentConnections = 64,
                 RequestTimeoutSeconds = requestTimeoutSeconds,
                 MaxBytesPerConnection = maxBytesPerConnection,
-                TelemetryIgnoredRemoteAddress = telemetryIgnoredRemoteAddress
+                TelemetryIgnoredRemoteAddresses =
+                    telemetryIgnoredRemoteAddresses ?? []
             }));
 
     private static TcpConnectionContext CreateContext(

@@ -42,7 +42,7 @@ public sealed class EchoConnectionHandler(
             return;
         }
 
-        if (IsIgnoredTelemetrySource(remote))
+        if (IsIgnoredTelemetrySource(remote, options.Value.TelemetryIgnoredRemoteAddresses))
         {
             logger.LogDebug(
                 "Skipping telemetry for monitoring connection from {Remote}.",
@@ -102,12 +102,24 @@ public sealed class EchoConnectionHandler(
             remoteEndPoint.Address.Equals(_configuredListenAddress);
     }
 
-    private bool IsIgnoredTelemetrySource(EndPoint? remote)
+    internal static bool IsIgnoredTelemetrySource(
+        EndPoint? remote,
+        IEnumerable<string> ignoredRemoteAddresses)
     {
-        string? remoteAddress = (remote as IPEndPoint)?.Address.MapToIPv4().ToString();
+        IPAddress? remoteAddress =
+            (remote as IPEndPoint)?
+                .Address
+                .MapToIPv4();
 
-        return !string.IsNullOrWhiteSpace(options.Value.TelemetryIgnoredRemoteAddress) &&
-            string.Equals(remoteAddress, options.Value.TelemetryIgnoredRemoteAddress, StringComparison.OrdinalIgnoreCase);
+        if (remoteAddress is null)
+        {
+            return false;
+        }
+
+        return ignoredRemoteAddresses.Any(
+            configuredAddress =>
+                IPAddress.TryParse(configuredAddress, out IPAddress? ignoredAddress) &&
+                remoteAddress.Equals(ignoredAddress.MapToIPv4()));
     }
 
     private async ValueTask CompleteTelemetryAsync(

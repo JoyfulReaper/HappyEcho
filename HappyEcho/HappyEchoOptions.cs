@@ -10,7 +10,7 @@ public sealed class HappyEchoOptions : ITcpServerOptions
     public int MaxConcurrentConnections { get; set; } = 64;
     public int RequestTimeoutSeconds { get; set; } = 15;
     public long MaxBytesPerConnection { get; set; } = 1_048_576;
-    public string? TelemetryIgnoredRemoteAddress { get; set; }
+    public string[] TelemetryIgnoredRemoteAddresses { get; set; } = [];
     public bool BlockLoopbackConnections { get; set; }
 
     public bool UdpEnabled { get; set; } = false;
